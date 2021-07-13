@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import grpc
 import pytest
@@ -8,6 +8,7 @@ from nameko_grpc.client import Client
 from nameko_grpc.dependency_provider import GrpcProxy
 from nameko_grpc.entrypoint import Grpc
 from nameko_grpc.errors import GrpcError
+from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace.status import StatusCode
 
@@ -218,8 +219,6 @@ class TestNoEntrypointFired:
         assert error.value.code == grpc.StatusCode.UNIMPLEMENTED
         assert error.value.message == "Method not found!"
 
-        container.stop()
-
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
 
@@ -386,7 +385,53 @@ class TestResultAttributes:
 
 
 class TestNoTracer:
-    pass
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    @pytest.fixture
+    def trace_provider(self):
+        """ Temporarily replace the configured trace provider with the default
+        provider that would be used if no SDK was in use.
+        """
+        with patch("nameko_opentelemetry.trace") as patched:
+            patched.get_tracer.return_value = trace.get_tracer(
+                __name__, "", trace._DefaultTracerProvider()
+            )
+            yield
+
+    def test_not_recording(
+        self, trace_provider, protos, client, container, memory_exporter
+    ):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 0
 
 
 class TestExceptions:
