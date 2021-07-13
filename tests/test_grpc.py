@@ -1,11 +1,17 @@
 from unittest.mock import Mock
 
+import grpc
 import pytest
+from nameko.testing.services import entrypoint_waiter
 from nameko.testing.utils import get_extension
 from nameko_grpc.client import Client
 from nameko_grpc.dependency_provider import GrpcProxy
 from nameko_grpc.entrypoint import Grpc
+from nameko_grpc.errors import GrpcError
 from opentelemetry.trace import SpanKind
+from opentelemetry.trace.status import StatusCode
+
+from nameko_opentelemetry import active_tracer
 
 
 class TestCardinalities:
@@ -46,7 +52,9 @@ class TestCardinalities:
         container = container_factory(ExampleService)
         container.start()
 
-        return container
+        yield container
+
+        container.stop()
 
     @pytest.fixture
     def client(self, grpc_port, container, services):
@@ -55,61 +63,65 @@ class TestCardinalities:
         ) as client:
             yield client
 
-    def test_unary_unary(self, client, protos, memory_exporter):
-        response = client.unary_unary(protos.ExampleRequest(value="A"))
-        assert response.message == "A"
+    def test_unary_unary(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
 
         for span in spans:
-            assert span.attributes["rpc.cardinality"] == "UNARY_UNARY"
+            assert span.attributes["rpc.grpc.cardinality"] == "UNARY_UNARY"
 
-    def test_unary_stream(self, client, protos, memory_exporter):
-        responses = client.unary_stream(
-            protos.ExampleRequest(value="A", response_count=2)
-        )
-        assert [(response.message, response.seqno) for response in responses] == [
-            ("A", 1),
-            ("A", 2),
-        ]
+    def test_unary_stream(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "unary_stream"):
+            responses = client.unary_stream(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            assert [(response.message, response.seqno) for response in responses] == [
+                ("A", 1),
+                ("A", 2),
+            ]
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
 
         for span in spans:
-            assert span.attributes["rpc.cardinality"] == "UNARY_STREAM"
+            assert span.attributes["rpc.grpc.cardinality"] == "UNARY_STREAM"
 
-    def test_stream_unary(self, client, protos, memory_exporter):
+    def test_stream_unary(self, container, client, protos, memory_exporter):
         def generate_requests():
             for value in ["A", "B"]:
                 yield protos.ExampleRequest(value=value)
 
-        response = client.stream_unary(generate_requests())
-        assert response.message == "A,B"
+        with entrypoint_waiter(container, "stream_unary"):
+            response = client.stream_unary(generate_requests())
+            assert response.message == "A,B"
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
 
         for span in spans:
-            assert span.attributes["rpc.cardinality"] == "STREAM_UNARY"
+            assert span.attributes["rpc.grpc.cardinality"] == "STREAM_UNARY"
 
-    def test_stream_stream(self, client, protos, memory_exporter):
+    def test_stream_stream(self, container, client, protos, memory_exporter):
         def generate_requests():
             for value in ["A", "B"]:
                 yield protos.ExampleRequest(value=value)
 
-        responses = client.stream_stream(generate_requests())
-        assert [(response.message, response.seqno) for response in responses] == [
-            ("A", 1),
-            ("B", 2),
-        ]
+        with entrypoint_waiter(container, "stream_stream"):
+            responses = client.stream_stream(generate_requests())
+            assert [(response.message, response.seqno) for response in responses] == [
+                ("A", 1),
+                ("B", 2),
+            ]
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
 
         for span in spans:
-            assert span.attributes["rpc.cardinality"] == "STREAM_STREAM"
+            assert span.attributes["rpc.grpc.cardinality"] == "STREAM_STREAM"
 
 
 class TestCaptureIncomingContext:
@@ -134,7 +146,9 @@ class TestCaptureIncomingContext:
         container = container_factory(ExampleService)
         container.start()
 
-        return container
+        yield container
+
+        container.stop()
 
     @pytest.fixture(params=["standalone", "dependency_provider"])
     def client(self, grpc_port, services, request, container):
@@ -147,16 +161,17 @@ class TestCaptureIncomingContext:
             dp = get_extension(container, GrpcProxy)
             yield dp.get_dependency(Mock(context_data={}))
 
-    def test_incoming_context(self, client, protos, memory_exporter):
+    def test_incoming_context(self, container, client, protos, memory_exporter):
         def generate_requests():
             for value in ["A", "B"]:
                 yield protos.ExampleRequest(value=value)
 
-        responses = client.stream_stream(generate_requests())
-        assert [(response.message, response.seqno) for response in responses] == [
-            ("A", 1),
-            ("B", 2),
-        ]
+        with entrypoint_waiter(container, "stream_stream"):
+            responses = client.stream_stream(generate_requests())
+            assert [(response.message, response.seqno) for response in responses] == [
+                ("A", 1),
+                ("B", 2),
+            ]
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
@@ -169,15 +184,197 @@ class TestCaptureIncomingContext:
 
 
 class TestNoEntrypointFired:
-    pass
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_client_method_not_found(self, protos, container, client, memory_exporter):
+
+        with pytest.raises(GrpcError) as error:
+            client.not_found(protos.ExampleRequest(value="hello"))
+        assert error.value.code == grpc.StatusCode.UNIMPLEMENTED
+        assert error.value.message == "Method not found!"
+
+        container.stop()
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Method not found!"
 
 
 class TestServerAttributes:
-    pass
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_attributes(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        assert attributes["rpc.system"] == "grpc"
+        assert attributes["rpc.method"] == "unary_unary"
+        assert attributes["rpc.service"] == "nameko.example"  # full package name
+        assert attributes["rpc.grpc.cardinality"] == "UNARY_UNARY"
 
 
 class TestClientAttributes:
-    pass
+    @pytest.fixture
+    def container(self, grpc_port, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            self_grpc = GrpcProxy(
+                "//localhost:{}".format(grpc_port), services.exampleStub
+            )
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture(params=["standalone", "dependency_provider"])
+    def client(self, grpc_port, services, request, container):
+        if request.param == "standalone":
+            with Client(
+                "//localhost:{}".format(grpc_port), services.exampleStub,
+            ) as client:
+                yield client
+        if request.param == "dependency_provider":
+            dp = get_extension(container, GrpcProxy)
+            yield dp.get_dependency(Mock(context_data={}))
+
+    def test_attributes(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        client_span = list(filter(lambda span: span.kind == SpanKind.CLIENT, spans))[0]
+
+        attributes = client_span.attributes
+        assert attributes["rpc.system"] == "grpc"
+        assert attributes["rpc.method"] == "unary_unary"
+        assert attributes["rpc.service"] == "nameko.example"  # full package name
+        assert attributes["rpc.grpc.cardinality"] == "UNARY_UNARY"
+
+
+class TestAdditionalSpans:
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                with active_tracer().start_as_current_span(
+                    "foobar", attributes={"foo": "bar"}
+                ):
+                    message = request.value * (request.multiplier or 1)
+                    return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_internal_span(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 3
+
+        internal_span = list(
+            filter(lambda span: span.kind == SpanKind.INTERNAL, spans)
+        )[0]
+
+        assert internal_span.name == "foobar"
 
 
 class TestCallArgsAttributes:
@@ -201,10 +398,6 @@ class TestClientStatus:
 
 
 class TestServerStatus:
-    pass
-
-
-class TestAdditionalSpans:
     pass
 
 

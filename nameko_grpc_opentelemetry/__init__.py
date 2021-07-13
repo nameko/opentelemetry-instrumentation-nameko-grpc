@@ -5,32 +5,39 @@ from weakref import WeakKeyDictionary
 import nameko_grpc.client
 import nameko_grpc.entrypoint
 from nameko_grpc.constants import Cardinality
+from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
 from nameko_grpc_opentelemetry.package import _instruments
 from nameko_grpc_opentelemetry.tee import Teeable
-from nameko_grpc_opentelemetry.version import __version__
 from opentelemetry import trace
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.propagate import inject
+from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util._time import _time_ns
 from wrapt import wrap_function_wrapper
 
+from nameko_opentelemetry import active_tracer
 from nameko_opentelemetry.entrypoints import EntrypointAdapter
 
 
 active_spans = WeakKeyDictionary()
 
 
-def active_tracer():
-    provider = trace.get_tracer_provider()
-    return trace.get_tracer(__name__, __version__, provider)
-
-
 class GrpcEntrypointAdapter(EntrypointAdapter):
     def get_attributes(self):
         attributes = super().get_attributes()
-        attributes["rpc.cardinality"] = self.worker_ctx.entrypoint.cardinality.name
+
+        inspector = Inspector(self.worker_ctx.entrypoint.stub)
+
+        attributes.update(
+            {
+                "rpc.system": "grpc",
+                "rpc.method": self.worker_ctx.entrypoint.method_name,
+                "rpc.service": inspector.service_name,
+                "rpc.grpc.cardinality": self.worker_ctx.entrypoint.cardinality.name,
+            }
+        )
         return attributes
 
     def get_call_args_attributes(self, call_args, redacted):
@@ -57,9 +64,8 @@ def future(tracer, config, wrapped, instance, args, kwargs):
         # "rpc.grpc.status_code": grpc.StatusCode.OK.value[0],
         "rpc.method": method.name,
         "rpc.service": inspector.service_name,
-        "rpc.cardinality": cardinality.name,
+        "rpc.grpc.cardinality": cardinality.name,
     }
-    print(attributes)
 
     span = tracer.start_span(
         name=f"{inspector.service_name}.{method.name}",
@@ -86,14 +92,15 @@ def result(tracer, config, wrapped, instance, args, kwargs):
 
     Terminate span...
     """
-    resp = wrapped(*args, **kwargs)
-    activation, span = active_spans[instance]
-    activation.__exit__(None, None, None)
-    span.end(_time_ns())
-    return resp
+    try:
+        return wrapped(*args, **kwargs)
+    finally:
+        activation, span = active_spans[instance]
+        activation.__exit__(None, None, None)
+        span.end(_time_ns())
 
 
-def handle_request(tracer, config, wrapped, instance, args, kwargs):
+def entrypoint_handle_request(tracer, config, wrapped, instance, args, kwargs):
     """ Wrap nameko_grpc.entrypoint.Grpc.handle_request
 
     If this entrypoint accepts a streaming request, we need to wrap it in a Teeeable
@@ -130,6 +137,29 @@ def handle_result(tracer, config, wrapped, instance, args, kwargs):
     return wrapped(response_stream, worker_ctx, result, exc_info, **kwargs)
 
 
+def server_handle_request(tracer, config, wrapped, instance, args, kwargs):
+    """ Wrap nameko_grpc.entrypoint.GrpcServer.handle_request.
+
+    Handle cases where no entrypoint is fired.
+    """
+    try:
+        return wrapped(*args, **kwargs)
+    except GrpcError as exc:
+        request_stream, response_stream = args
+
+        span = tracer.start_span(
+            request_stream.headers.get(":path"), kind=trace.SpanKind.SERVER
+        )
+        span.set_status(Status(StatusCode.ERROR, description=exc.message))
+        with trace.use_span(
+            span,
+            record_exception=False,
+            set_status_on_exception=False,
+            end_on_exit=True,
+        ):
+            raise
+
+
 class NamekoGrpcInstrumentor(BaseInstrumentor):
     def instrumentation_dependencies(self):
         return _instruments
@@ -146,12 +176,17 @@ class NamekoGrpcInstrumentor(BaseInstrumentor):
         wrap_function_wrapper(
             "nameko_grpc.client", "Future.result", partial(result, tracer, config)
         )
+        wrap_function_wrapper(
+            "nameko_grpc.entrypoint",
+            "GrpcServer.handle_request",
+            partial(server_handle_request, tracer, config),
+        )
 
         if config.get("send_request_payloads"):
             wrap_function_wrapper(
                 "nameko_grpc.entrypoint",
                 "Grpc.handle_request",
-                partial(handle_request, tracer, config),
+                partial(entrypoint_handle_request, tracer, config),
             )
 
         if config.get("send_response_payloads"):
@@ -165,5 +200,6 @@ class NamekoGrpcInstrumentor(BaseInstrumentor):
     def _uninstrument(self, **kwargs):
         unwrap(nameko_grpc.client.Method, "future")
         unwrap(nameko_grpc.client.Future, "result")
+        unwrap(nameko_grpc.entrypoint.GrpcServer, "handle_request")
         unwrap(nameko_grpc.entrypoint.Grpc, "handle_request")
         unwrap(nameko_grpc.entrypoint.Grpc, "handle_result")
