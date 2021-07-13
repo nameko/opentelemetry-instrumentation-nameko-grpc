@@ -438,6 +438,56 @@ class TestExceptions:
     pass
 
 
+class TestPartialSpanInClient:
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    @patch("nameko_grpc_opentelemetry.active_spans")
+    def test_span_not_started(
+        self, active_spans, protos, client, container, memory_exporter
+    ):
+
+        # fake a missing span
+        active_spans.get.return_value = None
+
+        with pytest.warns(UserWarning) as warnings:
+            with entrypoint_waiter(container, "unary_unary"):
+                response = client.unary_unary(protos.ExampleRequest(value="A"))
+                assert response.message == "A"
+
+        assert "no active span" in str(warnings[0].message)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 1
+
+        # server span only
+        assert spans[0].kind == SpanKind.SERVER
+
+
 class TestClientStatus:
     pass
 

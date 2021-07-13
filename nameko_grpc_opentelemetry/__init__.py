@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import warnings
 from functools import partial
 from weakref import WeakKeyDictionary
 
@@ -95,9 +96,14 @@ def result(tracer, config, wrapped, instance, args, kwargs):
     try:
         return wrapped(*args, **kwargs)
     finally:
-        activation, span = active_spans[instance]
-        activation.__exit__(None, None, None)
-        span.end(_time_ns())
+        activated = active_spans.get(instance)
+        if activated:
+            activation, span = activated
+            activation.__exit__(None, None, None)
+            span.end(_time_ns())
+        else:
+            # something went wrong when starting the span; nothing more to do
+            warnings.warn("result when no active span")
 
 
 def entrypoint_handle_request(tracer, config, wrapped, instance, args, kwargs):
