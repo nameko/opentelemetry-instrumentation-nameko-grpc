@@ -2,6 +2,7 @@ import time
 from unittest.mock import Mock, patch
 
 import grpc
+import nameko_grpc.errors
 import pytest
 from nameko.testing.services import entrypoint_waiter
 from nameko.testing.utils import get_extension
@@ -547,6 +548,10 @@ class TestClientStatus:
 
         assert client_span.status.is_ok
         assert client_span.status.status_code == StatusCode.OK
+        assert (
+            client_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.OK.value[0]
+        )
 
     def test_errored_call(self, container, client, protos, memory_exporter):
 
@@ -564,6 +569,10 @@ class TestClientStatus:
         assert not client_span.status.is_ok
         assert client_span.status.status_code == StatusCode.ERROR
         assert "DEADLINE_EXCEEDED" in client_span.status.description
+        assert (
+            client_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.DEADLINE_EXCEEDED.value[0]
+        )
 
 
 class TestServerStatus:

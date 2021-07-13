@@ -6,6 +6,7 @@ from weakref import WeakKeyDictionary
 
 import nameko_grpc.client
 import nameko_grpc.entrypoint
+import nameko_grpc.errors
 from nameko_grpc.constants import Cardinality
 from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
@@ -63,7 +64,7 @@ def future(tracer, config, wrapped, instance, args, kwargs):
 
     attributes = {
         "rpc.system": "grpc",
-        # "rpc.grpc.status_code": grpc.StatusCode.OK.value[0],
+        "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
         "rpc.method": method.name,
         "rpc.service": inspector.service_name,
         "rpc.grpc.cardinality": cardinality.name,
@@ -107,7 +108,9 @@ def result(tracer, config, wrapped, instance, args, kwargs):
             activation, span = activated
 
             if "exc_info" in state:
-                activation.__exit__(*state["exc_info"])
+                exc_info = state["exc_info"]
+                span.set_attribute("rpc.grpc.status_code", exc_info[1].code.value[0])
+                activation.__exit__(*exc_info)
             else:
                 activation.__exit__(None, None, None)
             span.end(_time_ns())
