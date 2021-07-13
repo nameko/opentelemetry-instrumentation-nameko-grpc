@@ -49,7 +49,16 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
     def get_result_attributes(self, result):
         cardinality = self.worker_ctx.entrypoint.cardinality
-        return {}
+        return {
+            "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
+        }
+
+    def end_span(self, span, result, exc_info):
+        super().end_span(span, result, exc_info)
+        if span.is_recording():
+            if exc_info:
+                grpc_error = GrpcError.from_exception(exc_info)
+                span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
@@ -112,6 +121,7 @@ def result(tracer, config, wrapped, instance, args, kwargs):
                 span.set_attribute("rpc.grpc.status_code", exc_info[1].code.value[0])
                 activation.__exit__(*exc_info)
             else:
+                span.set_status(Status(StatusCode.OK))
                 activation.__exit__(None, None, None)
             span.end(_time_ns())
         else:

@@ -576,7 +576,79 @@ class TestClientStatus:
 
 
 class TestServerStatus:
-    pass
+    @pytest.fixture
+    def container(self, grpc_port, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class Error(Exception):
+            pass
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                time.sleep(request.delay / 10)
+                return protos.ExampleReply(message=message)
+
+            @grpc
+            def unary_error(self, request, context):
+                raise Error("boom")
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_successful_call(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.OK
+        assert (
+            server_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.OK.value[0]
+        )
+
+    def test_errored_call(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_error"):
+            with pytest.raises(GrpcError):
+                client.unary_error(
+                    protos.ExampleRequest(value="A", delay=1), timeout=0.01
+                )
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Error: boom"
+        assert (
+            server_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.UNKNOWN.value[0]
+        )
 
 
 class TestScrubbing:
