@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import sys
 import warnings
 from functools import partial
 from weakref import WeakKeyDictionary
@@ -93,13 +94,22 @@ def result(tracer, config, wrapped, instance, args, kwargs):
 
     Terminate span...
     """
+    state = {}
+
     try:
         return wrapped(*args, **kwargs)
+    except GrpcError:
+        state["exc_info"] = sys.exc_info()
+        raise
     finally:
         activated = active_spans.get(instance)
         if activated:
             activation, span = activated
-            activation.__exit__(None, None, None)
+
+            if "exc_info" in state:
+                activation.__exit__(*state["exc_info"])
+            else:
+                activation.__exit__(None, None, None)
             span.end(_time_ns())
         else:
             # something went wrong when starting the span; nothing more to do

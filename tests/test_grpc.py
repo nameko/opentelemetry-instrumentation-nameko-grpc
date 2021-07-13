@@ -1,3 +1,4 @@
+import time
 from unittest.mock import Mock, patch
 
 import grpc
@@ -440,12 +441,16 @@ class TestExceptions:
 
 class TestPartialSpanInClient:
     @pytest.fixture
-    def container(self, protos, services, container_factory):
+    def container(self, grpc_port, protos, services, container_factory):
 
         grpc = Grpc.implementing(services.exampleStub)
 
         class ExampleService:
             name = "example"
+
+            self_grpc = GrpcProxy(
+                "//localhost:{}".format(grpc_port), services.exampleStub
+            )
 
             @grpc
             def unary_unary(self, request, context):
@@ -459,12 +464,16 @@ class TestPartialSpanInClient:
 
         container.stop()
 
-    @pytest.fixture
-    def client(self, grpc_port, container, services):
-        with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
-        ) as client:
-            yield client
+    @pytest.fixture(params=["standalone", "dependency_provider"])
+    def client(self, grpc_port, services, request, container):
+        if request.param == "standalone":
+            with Client(
+                "//localhost:{}".format(grpc_port), services.exampleStub,
+            ) as client:
+                yield client
+        if request.param == "dependency_provider":
+            dp = get_extension(container, GrpcProxy)
+            yield dp.get_dependency(Mock(context_data={}))
 
     @patch("nameko_grpc_opentelemetry.active_spans")
     def test_span_not_started(
@@ -489,7 +498,72 @@ class TestPartialSpanInClient:
 
 
 class TestClientStatus:
-    pass
+    @pytest.fixture
+    def container(self, grpc_port, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            self_grpc = GrpcProxy(
+                "//localhost:{}".format(grpc_port), services.exampleStub
+            )
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                time.sleep(request.delay / 10)
+                return protos.ExampleReply(message=message)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture(params=["standalone", "dependency_provider"])
+    def client(self, grpc_port, services, request, container):
+        if request.param == "standalone":
+            with Client(
+                "//localhost:{}".format(grpc_port), services.exampleStub,
+            ) as client:
+                yield client
+        if request.param == "dependency_provider":
+            dp = get_extension(container, GrpcProxy)
+            yield dp.get_dependency(Mock(context_data={}))
+
+    def test_successful_call(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        client_span = list(filter(lambda span: span.kind == SpanKind.CLIENT, spans))[0]
+
+        assert client_span.status.is_ok
+        assert client_span.status.status_code == StatusCode.OK
+
+    def test_errored_call(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_unary"):
+            with pytest.raises(GrpcError):
+                client.unary_unary(
+                    protos.ExampleRequest(value="A", delay=1), timeout=0.01
+                )
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        client_span = list(filter(lambda span: span.kind == SpanKind.CLIENT, spans))[0]
+
+        assert not client_span.status.is_ok
+        assert client_span.status.status_code == StatusCode.ERROR
+        assert "DEADLINE_EXCEEDED" in client_span.status.description
 
 
 class TestServerStatus:
