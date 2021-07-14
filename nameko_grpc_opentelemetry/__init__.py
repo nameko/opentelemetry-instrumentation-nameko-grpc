@@ -11,10 +11,8 @@ from google.protobuf.json_format import MessageToDict
 from nameko_grpc.constants import Cardinality
 from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
-from nameko_opentelemetry import active_tracer
-from nameko_opentelemetry.entrypoints import EntrypointAdapter
-from nameko_opentelemetry.scrubbers import scrub
-from nameko_opentelemetry.utils import serialise_to_string
+from nameko_grpc_opentelemetry.package import _instruments
+from nameko_grpc_opentelemetry.tee import Teeable
 from opentelemetry import trace
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
@@ -23,8 +21,10 @@ from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util._time import _time_ns
 from wrapt import wrap_function_wrapper
 
-from nameko_grpc_opentelemetry.package import _instruments
-from nameko_grpc_opentelemetry.tee import Teeable
+from nameko_opentelemetry import active_tracer
+from nameko_opentelemetry.entrypoints import EntrypointAdapter
+from nameko_opentelemetry.scrubbers import scrub
+from nameko_opentelemetry.utils import serialise_to_string
 
 
 active_spans = WeakKeyDictionary()
@@ -48,9 +48,9 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return attributes
 
     def get_call_args_attributes(self, call_args, redacted):
-        request = call_args.get("request")
-        if not request:
-            return
+        # get request directly from worker context rather than `call_args`, in case
+        # the name is different
+        request, context = self.worker_ctx.args
 
         if self.config.get("send_request_payloads"):
 

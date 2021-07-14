@@ -50,9 +50,6 @@ class ThreadSafeTee:
         with self.lock:
             return next(self.tee)
 
-    def __copy__(self):
-        return ThreadSafeTee(self.tee.__copy__(), self.lock)
-
 
 def safetee(iterable, n):
     """ Replacement for `itertools.tee` that returns `ThreadSafeTee` objects.

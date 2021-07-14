@@ -197,7 +197,7 @@ class TestNoEntrypointFired:
             name = "example"
 
             @grpc
-            def unary_unary(self, request, context):
+            def unary_unary(self, request, context):  # pragma: no cover
                 message = request.value * (request.multiplier or 1)
                 return protos.ExampleReply(message=message)
 
@@ -380,6 +380,18 @@ class TestAdditionalSpans:
 
 
 class TestCallArgsAttributes:
+    @pytest.fixture(
+        params=[True, False], ids=["send_request_payloads", "no_request_payloads"]
+    )
+    def send_request_payloads(self, request):
+        return request.param
+
+    @pytest.fixture
+    def config(self, config, send_request_payloads):
+        # disable request payloads based on param
+        config["send_request_payloads"] = send_request_payloads
+        return config
+
     @pytest.fixture
     def container(self, protos, services, container_factory):
 
@@ -402,6 +414,12 @@ class TestCallArgsAttributes:
 
                 return protos.ExampleReply(message=",".join(messages))
 
+            @grpc
+            def unary_stream(self, xrequest, context):
+                message = xrequest.value * (xrequest.multiplier or 1)
+                for i in range(xrequest.response_count):
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
         container = container_factory(ExampleService)
         container.start()
 
@@ -416,7 +434,9 @@ class TestCallArgsAttributes:
         ) as client:
             yield client
 
-    def test_unary_request(self, protos, client, container, memory_exporter):
+    def test_unary_request(
+        self, protos, client, container, memory_exporter, send_request_payloads
+    ):
         with entrypoint_waiter(container, "unary_unary"):
             response = client.unary_unary(protos.ExampleRequest(value="A"))
             assert response.message == "A"
@@ -427,9 +447,15 @@ class TestCallArgsAttributes:
         server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
 
         attributes = server_span.attributes
-        assert attributes["rpc.grpc.request"] == "{'value': 'A'}"
 
-    def test_streaming_request(self, protos, client, container, memory_exporter):
+        if send_request_payloads:
+            assert attributes["rpc.grpc.request"] == "{'value': 'A'}"
+        else:
+            assert "rpc.grpc.request" not in attributes
+
+    def test_streaming_request(
+        self, protos, client, container, memory_exporter, send_request_payloads
+    ):
         def generate_requests():
             for value in ["A", "B"]:
                 yield protos.ExampleRequest(value=value)
@@ -444,10 +470,51 @@ class TestCallArgsAttributes:
         server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
 
         attributes = server_span.attributes
-        assert attributes["rpc.grpc.request"] == "{'value': 'A'} | {'value': 'B'}"
+
+        if send_request_payloads:
+            assert attributes["rpc.grpc.request"] == "{'value': 'A'} | {'value': 'B'}"
+        else:
+            assert "rpc.grpc.request" not in attributes
+
+    def test_different_argument_name(
+        self, protos, client, container, memory_exporter, send_request_payloads
+    ):
+        with entrypoint_waiter(container, "unary_stream"):
+            responses = client.unary_stream(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            assert [(response.message, response.seqno) for response in responses] == [
+                ("A", 1),
+                ("A", 2),
+            ]
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        if send_request_payloads:
+            assert (
+                attributes["rpc.grpc.request"] == "{'value': 'A', 'responseCount': 2}"
+            )
+        else:
+            assert "rpc.grpc.request" not in attributes
 
 
 class TestResultAttributes:
+    @pytest.fixture(
+        params=[True, False], ids=["send_response_payloads", "no_response_payloads"]
+    )
+    def send_response_payloads(self, request):
+        return request.param
+
+    @pytest.fixture
+    def config(self, config, send_response_payloads):
+        # disable request payloads based on param
+        config["send_response_payloads"] = send_response_payloads
+        return config
+
     @pytest.fixture
     def container(self, protos, services, container_factory):
 
@@ -481,7 +548,9 @@ class TestResultAttributes:
         ) as client:
             yield client
 
-    def test_unary_response(self, container, client, protos, memory_exporter):
+    def test_unary_response(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
         with entrypoint_waiter(container, "unary_unary"):
             response = client.unary_unary(protos.ExampleRequest(value="A"))
             assert response.message == "A"
@@ -492,9 +561,14 @@ class TestResultAttributes:
         server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
 
         attributes = server_span.attributes
-        assert attributes["rpc.grpc.response"] == "{'message': 'A'}"
+        if send_response_payloads:
+            assert attributes["rpc.grpc.response"] == "{'message': 'A'}"
+        else:
+            assert "rpc.grpc.response" not in attributes
 
-    def test_stream_response(self, container, client, protos, memory_exporter):
+    def test_stream_response(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
         with entrypoint_waiter(container, "unary_stream"):
             responses = client.unary_stream(
                 protos.ExampleRequest(value="A", response_count=2)
@@ -510,10 +584,14 @@ class TestResultAttributes:
         server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
 
         attributes = server_span.attributes
-        assert (
-            attributes["rpc.grpc.response"]
-            == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
-        )
+
+        if send_response_payloads:
+            assert (
+                attributes["rpc.grpc.response"]
+                == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
+            )
+        else:
+            assert "rpc.grpc.response" not in attributes
 
 
 class TestNoTracer:
