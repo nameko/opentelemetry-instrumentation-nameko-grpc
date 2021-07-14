@@ -12,6 +12,7 @@ service example {
   rpc unary_grpc_error (ExampleRequest) returns (ExampleReply) {}
   rpc unary_error_via_context (ExampleRequest) returns (ExampleReply) {}
   rpc stream_error (ExampleRequest) returns (stream ExampleReply) {}
+  rpc sensitive (SensitiveRequest) returns (SensitiveReply) {}
 }
 
 
@@ -25,10 +26,21 @@ message ExampleRequest {
 }
 
 
-
 message ExampleReply {
   string message = 1;
   int32 seqno = 2;
   string metadata = 3;
+}
+
+
+message SensitiveRequest {
+  string secret = 1;
+  string not_secret = 2;
+}
+
+
+message SensitiveReply {
+  string token = 1;
+  string value = 2;
 }
 

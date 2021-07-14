@@ -894,4 +894,81 @@ class TestServerStatus:
 
 
 class TestScrubbing:
-    pass
+    @pytest.fixture
+    def container(self, container_factory, services, protos):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class Service:
+            name = "service"
+
+            @grpc
+            def sensitive(self, request, context):
+                return protos.SensitiveReply(
+                    token="should-be-scrubbed", value=request.secret
+                )
+
+        container = container_factory(Service)
+        container.start()
+
+        return container
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_response_scrubbing(self, protos, container, client, memory_exporter):
+
+        with entrypoint_waiter(container, "sensitive"):
+            response = client.sensitive(protos.SensitiveRequest(secret="input-secret"))
+            assert response.token == "should-be-scrubbed"
+            assert response.value == "input-secret"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert (
+            server_span.attributes["rpc.grpc.response"]
+            == "{'token': 'scrubbed', 'value': 'input-secret'}"
+        )
+
+    def test_request_scrubbing(self, protos, container, client, memory_exporter):
+
+        with entrypoint_waiter(container, "sensitive"):
+            response = client.sensitive(
+                protos.SensitiveRequest(secret="input-secret", not_secret="not-secret")
+            )
+            assert response.token == "should-be-scrubbed"
+            assert response.value == "input-secret"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert (
+            server_span.attributes["rpc.grpc.request"]
+            == "{'secret': 'scrubbed', 'notSecret': 'not-secret'}"
+        )
+
+    def test_metadata_scrubbing(self, protos, container, client, memory_exporter):
+
+        with entrypoint_waiter(container, "sensitive"):
+            response = client.sensitive(
+                protos.SensitiveRequest(secret="input-secret"),
+                metadata=[("password", "scrub-me")],
+            )
+            assert response.token == "should-be-scrubbed"
+            assert response.value == "input-secret"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert "'password': 'scrubbed'" in server_span.attributes["context_data"]
