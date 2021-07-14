@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 import nameko_grpc.client
 import nameko_grpc.entrypoint
 import nameko_grpc.errors
+from google.protobuf.json_format import MessageToDict
 from nameko_grpc.constants import Cardinality
 from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
@@ -22,6 +23,8 @@ from wrapt import wrap_function_wrapper
 
 from nameko_opentelemetry import active_tracer
 from nameko_opentelemetry.entrypoints import EntrypointAdapter
+from nameko_opentelemetry.scrubbers import scrub
+from nameko_opentelemetry.utils import serialise_to_string
 
 
 active_spans = WeakKeyDictionary()
@@ -44,14 +47,47 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return attributes
 
     def get_call_args_attributes(self, call_args, redacted):
-        cardinality = self.worker_ctx.entrypoint.cardinality
-        return {}
+        request = call_args.get("request")
+        if not request:
+            return
+
+        if self.config.get("send_request_payloads"):
+
+            cardinality = self.worker_ctx.entrypoint.cardinality
+            if cardinality in (Cardinality.STREAM_UNARY, Cardinality.STREAM_STREAM):
+                messages = [
+                    serialise_to_string(scrub(MessageToDict(req), self.config))
+                    for req in request.tee()
+                ]
+                request_string = " | ".join(messages)
+
+            else:
+
+                request_string = serialise_to_string(
+                    scrub(MessageToDict(request), self.config)
+                )
+
+            return {"rpc.grpc.request": request_string}
 
     def get_result_attributes(self, result):
-        cardinality = self.worker_ctx.entrypoint.cardinality
-        return {
+        attributes = {
             "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
         }
+        if self.config.get("send_response_payloads"):
+
+            cardinality = self.worker_ctx.entrypoint.cardinality
+            if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
+                result = result.tee()
+
+            # attributes.update(
+            #     {
+            #         "rpc.grpc.response": serialise_to_string(
+            #             scrub(MessageToDict(result)), self.config
+            #         )
+            #     }
+            # )
+
+        return attributes
 
     def get_exception_attributes(self, exc_info):
         """ Additional attributes to save alongside a worker exception.

@@ -379,7 +379,71 @@ class TestAdditionalSpans:
 
 
 class TestCallArgsAttributes:
-    pass
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+            @grpc
+            def stream_unary(self, request, context):
+                messages = []
+                for index, req in enumerate(request):
+                    message = req.value * (req.multiplier or 1)
+                    messages.append(message)
+
+                return protos.ExampleReply(message=",".join(messages))
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_unary_request(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        assert attributes["rpc.grpc.request"] == "{'value': 'A'}"
+
+    def test_streaming_request(self, protos, client, container, memory_exporter):
+        def generate_requests():
+            for value in ["A", "B"]:
+                yield protos.ExampleRequest(value=value)
+
+        with entrypoint_waiter(container, "stream_unary"):
+            response = client.stream_unary(generate_requests())
+            assert response.message == "A,B"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        assert attributes["rpc.grpc.request"] == "{'value': 'A'} | {'value': 'B'}"
 
 
 class TestResultAttributes:
