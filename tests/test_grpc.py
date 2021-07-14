@@ -447,7 +447,72 @@ class TestCallArgsAttributes:
 
 
 class TestResultAttributes:
-    pass
+    @pytest.fixture
+    def container(self, protos, services, container_factory):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class ExampleService:
+            name = "example"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+            @grpc
+            def unary_stream(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+        container = container_factory(ExampleService)
+        container.start()
+
+        yield container
+
+        container.stop()
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_unary_response(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        assert attributes["rpc.grpc.response"] == "{'message': 'A'}"
+
+    def test_stream_response(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "unary_stream"):
+            responses = client.unary_stream(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            assert [(response.message, response.seqno) for response in responses] == [
+                ("A", 1),
+                ("A", 2),
+            ]
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+        assert (
+            attributes["rpc.grpc.response"]
+            == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
+        )
 
 
 class TestNoTracer:
@@ -812,9 +877,7 @@ class TestServerStatus:
 
         with entrypoint_waiter(container, "unary_error"):
             with pytest.raises(GrpcError):
-                client.unary_error(
-                    protos.ExampleRequest(value="A", delay=1), timeout=0.01
-                )
+                client.unary_error(protos.ExampleRequest(value="A"))
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2

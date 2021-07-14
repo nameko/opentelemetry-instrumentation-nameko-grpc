@@ -8,6 +8,7 @@ import nameko_grpc.client
 import nameko_grpc.entrypoint
 import nameko_grpc.errors
 from google.protobuf.json_format import MessageToDict
+from nameko_grpc import streams
 from nameko_grpc.constants import Cardinality
 from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
@@ -28,6 +29,7 @@ from nameko_opentelemetry.utils import serialise_to_string
 
 
 active_spans = WeakKeyDictionary()
+result_iterators = WeakKeyDictionary()
 
 
 class GrpcEntrypointAdapter(EntrypointAdapter):
@@ -57,6 +59,7 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             if cardinality in (Cardinality.STREAM_UNARY, Cardinality.STREAM_STREAM):
                 messages = [
                     serialise_to_string(scrub(MessageToDict(req), self.config))
+                    # request can be tee'd here because it's not been read yet
                     for req in request.tee()
                 ]
                 request_string = " | ".join(messages)
@@ -74,18 +77,27 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
         }
         if self.config.get("send_response_payloads"):
-
             cardinality = self.worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
-                result = result.tee()
+                messages = [
+                    serialise_to_string(scrub(MessageToDict(res), self.config))
+                    # result is tee'd in handle_result because the service
+                    # has already drained the iterator by the time we get here
+                    for res in result_iterators.pop(self.worker_ctx, {})
+                    if res is not None
+                ]
+                response_string = " | ".join(messages)
 
-            # attributes.update(
-            #     {
-            #         "rpc.grpc.response": serialise_to_string(
-            #             scrub(MessageToDict(result)), self.config
-            #         )
-            #     }
-            # )
+            else:
+                (res,) = result
+                if res is not None:
+                    response_string = serialise_to_string(
+                        scrub(MessageToDict(res), self.config)
+                    )
+                else:
+                    response_string = ""
+
+            attributes.update({"rpc.grpc.response": response_string})
 
         return attributes
 
@@ -207,6 +219,8 @@ def handle_result(tracer, config, wrapped, instance, args, kwargs):
 
     if instance.cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
         result = Teeable(result)
+        # create a tee immediately, before the entrypoint starts draining the iterator
+        result_iterators[worker_ctx] = result.tee()
 
     return wrapped(response_stream, worker_ctx, result, exc_info, **kwargs)
 
