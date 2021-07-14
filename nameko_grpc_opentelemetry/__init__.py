@@ -8,12 +8,13 @@ import nameko_grpc.client
 import nameko_grpc.entrypoint
 import nameko_grpc.errors
 from google.protobuf.json_format import MessageToDict
-from nameko_grpc import streams
 from nameko_grpc.constants import Cardinality
 from nameko_grpc.errors import GrpcError
 from nameko_grpc.inspection import Inspector
-from nameko_grpc_opentelemetry.package import _instruments
-from nameko_grpc_opentelemetry.tee import Teeable
+from nameko_opentelemetry import active_tracer
+from nameko_opentelemetry.entrypoints import EntrypointAdapter
+from nameko_opentelemetry.scrubbers import scrub
+from nameko_opentelemetry.utils import serialise_to_string
 from opentelemetry import trace
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
@@ -22,10 +23,8 @@ from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util._time import _time_ns
 from wrapt import wrap_function_wrapper
 
-from nameko_opentelemetry import active_tracer
-from nameko_opentelemetry.entrypoints import EntrypointAdapter
-from nameko_opentelemetry.scrubbers import scrub
-from nameko_opentelemetry.utils import serialise_to_string
+from nameko_grpc_opentelemetry.package import _instruments
+from nameko_grpc_opentelemetry.tee import Teeable
 
 
 active_spans = WeakKeyDictionary()

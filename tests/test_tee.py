@@ -5,6 +5,7 @@ from collections import defaultdict
 
 import eventlet
 import pytest
+
 from nameko_grpc_opentelemetry.tee import Teeable
 
 

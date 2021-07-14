@@ -3,17 +3,13 @@ import nameko
 import pytest
 from grpc import protos_and_services
 from nameko.testing.utils import find_free_port
-from nameko_grpc.client import Client
-from nameko_grpc.entrypoint import Grpc
-from nameko_grpc_opentelemetry import NamekoGrpcInstrumentor
+from nameko_opentelemetry import NamekoInstrumentor
 from opentelemetry import trace
-from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from wrapt import wrap_function_wrapper
 
-from nameko_opentelemetry import NamekoInstrumentor
+from nameko_grpc_opentelemetry import NamekoGrpcInstrumentor
 
 
 @pytest.fixture(scope="session")
@@ -35,7 +31,9 @@ def config():
         "send_request_payloads": True,
         "send_response_payloads": True,
         "entrypoint_adapters": {
-            "nameko_grpc.entrypoint.Grpc": "nameko_grpc_opentelemetry.GrpcEntrypointAdapter"
+            "nameko_grpc.entrypoint.Grpc": (
+                "nameko_grpc_opentelemetry.GrpcEntrypointAdapter"
+            )
         },
     }
 
