@@ -9,7 +9,7 @@ from nameko.testing.utils import get_extension
 from nameko_grpc.client import Client
 from nameko_grpc.dependency_provider import GrpcProxy
 from nameko_grpc.entrypoint import Grpc
-from nameko_grpc.errors import GrpcError
+from nameko_grpc.errors import GRPC_DETAILS_METADATA_KEY, GrpcError, make_status
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace.status import StatusCode
@@ -437,7 +437,122 @@ class TestNoTracer:
 
 
 class TestExceptions:
-    pass
+    @pytest.fixture
+    def container(self, container_factory, services, protos):
+
+        grpc = Grpc.implementing(services.exampleStub)
+
+        class Error(Exception):
+            pass
+
+        class Service:
+            name = "service"
+
+            @grpc
+            def unary_unary(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                return protos.ExampleReply(message=message)
+
+            @grpc
+            def unary_error(self, request, context):
+                raise Error("boom")
+
+            @grpc
+            def unary_error_via_context(self, request, context):
+                code = nameko_grpc.errors.StatusCode.UNAUTHENTICATED
+                message = "Not allowed!"
+
+                context.set_code(code)
+                context.set_message(message)
+                context.set_trailing_metadata(
+                    [
+                        (
+                            GRPC_DETAILS_METADATA_KEY,
+                            make_status(code, message).SerializeToString(),
+                        )
+                    ]
+                )
+
+            @grpc
+            def unary_grpc_error(self, request, context):
+                code = nameko_grpc.errors.StatusCode.UNAUTHENTICATED
+                message = "Not allowed!"
+
+                raise GrpcError(
+                    code=code, message=message, status=make_status(code, message)
+                )
+
+        container = container_factory(Service)
+        container.start()
+
+        return container
+
+    @pytest.fixture
+    def client(self, grpc_port, container, services):
+        with Client(
+            "//localhost:{}".format(grpc_port), services.exampleStub,
+        ) as client:
+            yield client
+
+    def test_success(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A"))
+            assert response.message == "A"
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        # no exception
+        assert len(server_span.events) == 0
+
+    def test_raise_exception(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "unary_error"):
+            with pytest.raises(GrpcError):
+                client.unary_error(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert len(server_span.events) == 1
+        event = server_span.events[0]
+
+        assert event.name == "exception"
+        assert event.attributes["exception.type"] == "Error"
+        assert event.attributes["exception.message"] == "boom"
+
+    def test_raise_grpc_error(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "unary_grpc_error"):
+            with pytest.raises(GrpcError):
+                client.unary_grpc_error(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert len(server_span.events) == 1
+        event = server_span.events[0]
+
+        assert event.name == "exception"
+        assert event.attributes["exception.type"] == "GrpcError"
+        assert event.attributes["exception.message"] == "Not allowed!"
+
+    def test_error_via_context(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "unary_error_via_context"):
+            with pytest.raises(GrpcError):
+                client.unary_error_via_context(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        # no exception
+        assert len(server_span.events) == 0
 
 
 class TestPartialSpanInClient:

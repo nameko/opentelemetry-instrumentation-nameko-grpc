@@ -53,6 +53,15 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
         }
 
+    def get_exception_attributes(self, exc_info):
+        """ Additional attributes to save alongside a worker exception.
+        """
+        attributes = super().get_exception_attributes(exc_info)
+        attributes.update(
+            {"exception.message": GrpcError.from_exception(exc_info).message}
+        )
+        return attributes
+
     def end_span(self, span, result, exc_info):
         super().end_span(span, result, exc_info)
         if span.is_recording():
