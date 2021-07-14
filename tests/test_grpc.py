@@ -11,10 +11,11 @@ from nameko_grpc.client import Client
 from nameko_grpc.dependency_provider import GrpcProxy
 from nameko_grpc.entrypoint import Grpc
 from nameko_grpc.errors import GRPC_DETAILS_METADATA_KEY, GrpcError, make_status
-from nameko_opentelemetry import active_tracer
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace.status import StatusCode
+
+from nameko_opentelemetry import active_tracer
 
 
 class TestCardinalities:
@@ -802,7 +803,7 @@ class TestClientStatus:
         with entrypoint_waiter(container, "unary_unary"):
             with pytest.raises(GrpcError):
                 client.unary_unary(
-                    protos.ExampleRequest(value="A", delay=1), timeout=0.01
+                    protos.ExampleRequest(value="A", delay=1), timeout=0.1
                 )
 
         spans = memory_exporter.get_finished_spans()
