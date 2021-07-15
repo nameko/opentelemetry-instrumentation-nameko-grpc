@@ -167,7 +167,7 @@ def result(tracer, config, wrapped, instance, args, kwargs):
     except GrpcError:
         state["exc_info"] = sys.exc_info()
         raise
-    finally:
+    finally:  # pragma: no cover -- branch coverage gets confused
         activated = active_spans.get(instance)
         if activated:
             activation, span = activated
