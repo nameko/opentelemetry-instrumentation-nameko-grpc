@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-_instruments = ("nameko-grpc >= 1.5.0",)
+_instruments = ("nameko-grpc >= 1.2.0rc",)

@@ -26,7 +26,7 @@ setup(
     packages=find_packages(exclude=["test", "test.*"]),
     install_requires=[
         "nameko",
-        "nameko-grpc",
+        "nameko-grpc>=1.2.0rc",
         "googleapis-common-protos",  # should be a nameko-grpc dep
         "opentelemetry-api",
         "opentelemetry-instrumentation",
