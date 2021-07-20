@@ -32,29 +32,29 @@ result_iterators = WeakKeyDictionary()
 
 
 class GrpcEntrypointAdapter(EntrypointAdapter):
-    def get_attributes(self):
-        attributes = super().get_attributes()
+    def get_attributes(self, worker_ctx):
+        attributes = super().get_attributes(worker_ctx)
 
-        inspector = Inspector(self.worker_ctx.entrypoint.stub)
+        inspector = Inspector(worker_ctx.entrypoint.stub)
 
         attributes.update(
             {
                 "rpc.system": "grpc",
-                "rpc.method": self.worker_ctx.entrypoint.method_name,
+                "rpc.method": worker_ctx.entrypoint.method_name,
                 "rpc.service": inspector.service_name,
-                "rpc.grpc.cardinality": self.worker_ctx.entrypoint.cardinality.name,
+                "rpc.grpc.cardinality": worker_ctx.entrypoint.cardinality.name,
             }
         )
         return attributes
 
-    def get_call_args_attributes(self, call_args, redacted):
+    def get_call_args_attributes(self, worker_ctx, call_args, redacted):
         # get request directly from worker context rather than `call_args`, in case
         # the name is different
-        request, context = self.worker_ctx.args
+        request, context = worker_ctx.args
 
         if self.config.get("send_request_payloads"):
 
-            cardinality = self.worker_ctx.entrypoint.cardinality
+            cardinality = worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.STREAM_UNARY, Cardinality.STREAM_STREAM):
                 messages = [
                     serialise_to_string(scrub(MessageToDict(req), self.config))
@@ -71,18 +71,18 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
             return {"rpc.grpc.request": request_string}
 
-    def get_result_attributes(self, result):
+    def get_result_attributes(self, worker_ctx, result):
         attributes = {
             "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
         }
         if self.config.get("send_response_payloads"):
-            cardinality = self.worker_ctx.entrypoint.cardinality
+            cardinality = worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
                 messages = [
                     serialise_to_string(scrub(MessageToDict(res), self.config))
                     # result is tee'd in handle_result because the service
                     # has already drained the iterator by the time we get here
-                    for res in result_iterators.pop(self.worker_ctx, {})
+                    for res in result_iterators.pop(worker_ctx, {})
                     if res is not None
                 ]
                 response_string = " | ".join(messages)
@@ -100,17 +100,17 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
         return attributes
 
-    def get_exception_attributes(self, exc_info):
+    def get_exception_attributes(self, worker_ctx, exc_info):
         """ Additional attributes to save alongside a worker exception.
         """
-        attributes = super().get_exception_attributes(exc_info)
+        attributes = super().get_exception_attributes(worker_ctx, exc_info)
         attributes.update(
             {"exception.message": GrpcError.from_exception(exc_info).message}
         )
         return attributes
 
-    def end_span(self, span, result, exc_info):
-        super().end_span(span, result, exc_info)
+    def end_span(self, span, worker_ctx, result, exc_info):
+        super().end_span(span, worker_ctx, result, exc_info)
         if span.is_recording():
             if exc_info:
                 grpc_error = GrpcError.from_exception(exc_info)

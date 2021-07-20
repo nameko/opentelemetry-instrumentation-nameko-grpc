@@ -30,7 +30,7 @@ setup(
         "googleapis-common-protos",  # should be a nameko-grpc dep
         "opentelemetry-api",
         "opentelemetry-instrumentation",
-        "opentelemetry-instrumentation-nameko>=0.2.0",
+        "opentelemetry-instrumentation-nameko>=0.3.0",
     ],
     extras_require={
         "dev": list(PACKAGE_INFO["_instruments"])
