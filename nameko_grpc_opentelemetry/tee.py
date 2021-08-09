@@ -76,4 +76,4 @@ class Teeable:
 
     def tee(self):
         self.iterable, safe_tee = safetee(self.iterable, 2)
-        return safe_tee
+        return Teeable(safe_tee)
