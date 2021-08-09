@@ -115,6 +115,22 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
         return attributes
 
+    def get_status(self, worker_ctx, result, exc_info):
+        """ Span status for this worker.
+        """
+        if exc_info:
+            return super().get_status(worker_ctx, result, exc_info)
+
+        request, context = worker_ctx.args
+        status = int(context.response_stream.trailers.get("grpc-status", 0))
+        if status:
+            return Status(
+                StatusCode.ERROR,
+                description=context.response_stream.trailers.get("grpc-message"),
+            )
+
+        return Status(StatusCode.OK)
+
     def get_exception_attributes(self, worker_ctx, exc_info):
         """ Additional attributes to save alongside a worker exception.
         """
@@ -130,6 +146,10 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             if exc_info:
                 grpc_error = GrpcError.from_exception(exc_info)
                 span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
+            else:
+                request, context = worker_ctx.args
+                status = context.response_stream.trailers.get("grpc-status")
+                span.set_attribute("rpc.grpc.status_code", int(status))
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):

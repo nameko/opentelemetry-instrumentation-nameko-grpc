@@ -1067,6 +1067,54 @@ class TestServerStatus:
             def unary_error(self, request, context):
                 raise Error("boom")
 
+            @grpc
+            def unary_error_via_context(self, request, context):
+                code = nameko_grpc.errors.StatusCode.UNAUTHENTICATED
+                message = "Not allowed!"
+
+                context.set_code(code)
+                context.set_message(message)
+                context.set_trailing_metadata(
+                    [
+                        (
+                            GRPC_DETAILS_METADATA_KEY,
+                            make_status(code, message).SerializeToString(),
+                        )
+                    ]
+                )
+
+            @grpc
+            def stream_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):
+                    # raise on the last message
+                    if i == request.response_count - 1:
+                        raise Error("boom")
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_error_via_context(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):
+                    # break on the last message
+                    if i == request.response_count - 1:
+
+                        code = StatusCode.RESOURCE_EXHAUSTED
+                        message = "Out of tokens!"
+
+                        context.set_code(code)
+                        context.set_message(message)
+                        context.set_trailing_metadata(
+                            [
+                                (
+                                    GRPC_DETAILS_METADATA_KEY,
+                                    make_status(code, message).SerializeToString(),
+                                )
+                            ]
+                        )
+                        break
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
         container = container_factory(ExampleService)
         container.start()
 
@@ -1118,10 +1166,26 @@ class TestServerStatus:
             == nameko_grpc.errors.StatusCode.UNKNOWN.value[0]
         )
 
-    # test errored stream
+    def test_errored_call_via_context(self, container, client, protos, memory_exporter):
 
-    # test_grpc_error?
-    # test_error_via_context?
+        with entrypoint_waiter(container, "unary_error_via_context"):
+            with pytest.raises(GrpcError):
+                client.unary_error_via_context(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Not allowed!"
+        assert server_span.attributes["rpc.grpc.status_code"] == (
+            nameko_grpc.errors.StatusCode.UNAUTHENTICATED.value[0]
+        )
+
+    # test errored stream
+    # test errored stream via context
 
 
 class TestScrubbing:
