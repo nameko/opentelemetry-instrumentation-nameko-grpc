@@ -72,19 +72,23 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             return {"rpc.grpc.request": request_string}
 
     def get_result_attributes(self, worker_ctx, result):
-        attributes = {
-            "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
-        }
+        attributes = {}
+
         if self.config.get("send_response_payloads"):
             cardinality = worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
-                messages = [
-                    serialise_to_string(scrub(MessageToDict(res), self.config))
-                    # result is tee'd in handle_result because the service
-                    # has already drained the iterator by the time we get here
-                    for res in result_iterators.pop(worker_ctx, {})
-                    if res is not None
-                ]
+                messages = []
+                # result is tee'd in handle_result because the service
+                # has already drained the iterator by the time we get here
+                try:
+                    messages.extend(
+                        serialise_to_string(scrub(MessageToDict(res), self.config))
+                        for res in result_iterators.pop(worker_ctx, {})
+                        if res is not None
+                    )
+                except Exception as exc:
+                    messages.append(f"{type(exc).__name__}: {exc}")
+
                 response_string = " | ".join(messages)
 
             else:
@@ -100,6 +104,22 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
         return attributes
 
+    def get_status(self, worker_ctx, result, exc_info):
+        """ Span status for this worker.
+        """
+        if exc_info:
+            return super().get_status(worker_ctx, result, exc_info)
+
+        request, context = worker_ctx.args
+        status = int(context.response_stream.trailers.get("grpc-status", 0))
+        if status:
+            return Status(
+                StatusCode.ERROR,
+                description=context.response_stream.trailers.get("grpc-message"),
+            )
+
+        return Status(StatusCode.OK)
+
     def get_exception_attributes(self, worker_ctx, exc_info):
         """ Additional attributes to save alongside a worker exception.
         """
@@ -110,11 +130,36 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return attributes
 
     def end_span(self, span, worker_ctx, result, exc_info):
-        super().end_span(span, worker_ctx, result, exc_info)
-        if span.is_recording():
-            if exc_info:
-                grpc_error = GrpcError.from_exception(exc_info)
-                span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
+        if not span.is_recording():
+            return
+
+        cardinality = worker_ctx.entrypoint.cardinality
+
+        # capture exceptions, either direct or from a stream
+        capture_exc_info = exc_info
+        if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
+            try:
+                list(result_iterators[worker_ctx].tee())
+            except Exception:
+                capture_exc_info = sys.exc_info()
+                # super() impl won't call get_result_attributes in the
+                # error case, but we want it if the error occurred in a stream.
+                span.set_attributes(
+                    self.get_result_attributes(worker_ctx, result) or {}
+                )
+
+        # set grpc status code attribute
+        if capture_exc_info:
+            grpc_error = GrpcError.from_exception(capture_exc_info)
+            span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
+        else:
+            _, context = worker_ctx.args
+            span.set_attribute(
+                "rpc.grpc.status_code",
+                int(context.response_stream.trailers.get("grpc-status", 0)),
+            )
+
+        super().end_span(span, worker_ctx, result, capture_exc_info)
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
@@ -269,19 +314,17 @@ class NamekoGrpcInstrumentor(BaseInstrumentor):
             partial(server_handle_request, tracer, config),
         )
 
+        wrap_function_wrapper(
+            "nameko_grpc.entrypoint",
+            "Grpc.handle_result",
+            partial(handle_result, tracer, config),
+        )
+
         if config.get("send_request_payloads"):
             wrap_function_wrapper(
                 "nameko_grpc.entrypoint",
                 "Grpc.handle_request",
                 partial(entrypoint_handle_request, tracer, config),
-            )
-
-        if config.get("send_response_payloads"):
-
-            wrap_function_wrapper(
-                "nameko_grpc.entrypoint",
-                "Grpc.handle_result",
-                partial(handle_result, tracer, config),
             )
 
     def _uninstrument(self, **kwargs):

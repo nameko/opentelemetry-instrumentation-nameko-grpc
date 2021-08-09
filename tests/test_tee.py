@@ -93,6 +93,18 @@ class TestTeeable:
         assert next(tee2) == 0
         assert next(tee2) == 1
 
+    def test_tee_is_teeable(self, make_generator):
+        gen = Teeable(make_generator())
+        tee1 = gen.tee()
+        tee2 = tee1.tee()
+
+        assert next(gen) == 0
+        assert next(gen) == 1
+        assert next(tee1) == 0
+        assert next(tee1) == 1
+        assert next(tee2) == 0
+        assert next(tee2) == 1
+
     def test_thread_safe(self, make_generator, tracker):
 
         gen = Teeable(make_generator())

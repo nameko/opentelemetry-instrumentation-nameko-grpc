@@ -519,6 +519,9 @@ class TestResultAttributes:
 
         grpc = Grpc.implementing(services.exampleStub)
 
+        class Error(Exception):
+            pass
+
         class ExampleService:
             name = "example"
 
@@ -531,6 +534,15 @@ class TestResultAttributes:
             def unary_stream(self, request, context):
                 message = request.value * (request.multiplier or 1)
                 for i in range(request.response_count):
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # raise on the last message
+                    if i == request.response_count - 1:
+                        raise Error("boom")
                     yield protos.ExampleReply(message=message, seqno=i + 1)
 
         container = container_factory(ExampleService)
@@ -588,6 +600,31 @@ class TestResultAttributes:
             assert (
                 attributes["rpc.grpc.response"]
                 == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
+            )
+        else:
+            assert "rpc.grpc.response" not in attributes
+
+    def test_error_in_stream(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
+        with entrypoint_waiter(container, "stream_error"):
+            responses = client.stream_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_response_payloads:
+            assert (
+                attributes["rpc.grpc.response"]
+                == "{'message': 'A', 'seqno': 1} | Error: boom"
             )
         else:
             assert "rpc.grpc.response" not in attributes
@@ -689,6 +726,55 @@ class TestExceptions:
                     code=code, message=message, status=make_status(code, message)
                 )
 
+            @grpc
+            def stream_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # raise on the last message
+                    if i == request.response_count - 1:
+                        raise Error("boom")
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_error_via_context(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # break on the last message
+                    if i == request.response_count - 1:
+
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
+                        message = "Out of tokens!"
+
+                        context.set_code(code)
+                        context.set_message(message)
+                        context.set_trailing_metadata(
+                            [
+                                (
+                                    GRPC_DETAILS_METADATA_KEY,
+                                    make_status(code, message).SerializeToString(),
+                                )
+                            ]
+                        )
+                        break
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_grpc_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # raise on the last message
+                    if i == request.response_count - 1:
+
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
+                        message = "Out of tokens!"
+
+                        raise GrpcError(
+                            code=code,
+                            message=message,
+                            status=make_status(code, message),
+                        )
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
         container = container_factory(Service)
         container.start()
 
@@ -752,6 +838,66 @@ class TestExceptions:
         with entrypoint_waiter(container, "unary_error_via_context"):
             with pytest.raises(GrpcError):
                 client.unary_error_via_context(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        # no exception
+        assert len(server_span.events) == 0
+
+    def test_raise_exception_in_stream(
+        self, protos, client, container, memory_exporter
+    ):
+        with entrypoint_waiter(container, "stream_error"):
+            responses = client.stream_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert len(server_span.events) == 1
+        event = server_span.events[0]
+
+        assert event.name == "exception"
+        assert event.attributes["exception.type"] == "Error"
+        assert event.attributes["exception.message"] == "boom"
+
+    def test_raise_grpc_error_in_stream(
+        self, protos, client, container, memory_exporter
+    ):
+        with entrypoint_waiter(container, "stream_grpc_error"):
+            responses = client.stream_grpc_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert len(server_span.events) == 1
+        event = server_span.events[0]
+
+        assert event.name == "exception"
+        assert event.attributes["exception.type"] == "GrpcError"
+        assert event.attributes["exception.message"] == "Out of tokens!"
+
+    def test_stream_error_via_context(self, protos, client, container, memory_exporter):
+        with entrypoint_waiter(container, "stream_error_via_context"):
+            responses = client.stream_error_via_context(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
@@ -919,6 +1065,54 @@ class TestServerStatus:
             def unary_error(self, request, context):
                 raise Error("boom")
 
+            @grpc
+            def unary_error_via_context(self, request, context):
+                code = nameko_grpc.errors.StatusCode.UNAUTHENTICATED
+                message = "Not allowed!"
+
+                context.set_code(code)
+                context.set_message(message)
+                context.set_trailing_metadata(
+                    [
+                        (
+                            GRPC_DETAILS_METADATA_KEY,
+                            make_status(code, message).SerializeToString(),
+                        )
+                    ]
+                )
+
+            @grpc
+            def stream_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # raise on the last message
+                    if i == request.response_count - 1:
+                        raise Error("boom")
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_error_via_context(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):  # pragma: no cover
+                    # break on the last message
+                    if i == request.response_count - 1:
+
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
+                        message = "Out of tokens!"
+
+                        context.set_code(code)
+                        context.set_message(message)
+                        context.set_trailing_metadata(
+                            [
+                                (
+                                    GRPC_DETAILS_METADATA_KEY,
+                                    make_status(code, message).SerializeToString(),
+                                )
+                            ]
+                        )
+                        break
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
         container = container_factory(ExampleService)
         container.start()
 
@@ -968,6 +1162,67 @@ class TestServerStatus:
         assert (
             server_span.attributes["rpc.grpc.status_code"]
             == nameko_grpc.errors.StatusCode.UNKNOWN.value[0]
+        )
+
+    def test_errored_call_via_context(self, container, client, protos, memory_exporter):
+
+        with entrypoint_waiter(container, "unary_error_via_context"):
+            with pytest.raises(GrpcError):
+                client.unary_error_via_context(protos.ExampleRequest(value="A"))
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Not allowed!"
+        assert server_span.attributes["rpc.grpc.status_code"] == (
+            nameko_grpc.errors.StatusCode.UNAUTHENTICATED.value[0]
+        )
+
+    def test_errored_stream(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "stream_error"):
+            responses = client.stream_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Error: boom"
+        assert (
+            server_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.UNKNOWN.value[0]
+        )
+
+    def test_errored_stream_via_context(
+        self, container, client, protos, memory_exporter
+    ):
+        with entrypoint_waiter(container, "stream_error_via_context"):
+            responses = client.stream_error_via_context(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Out of tokens!"
+        assert server_span.attributes["rpc.grpc.status_code"] == (
+            nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED.value[0]
         )
 
 
