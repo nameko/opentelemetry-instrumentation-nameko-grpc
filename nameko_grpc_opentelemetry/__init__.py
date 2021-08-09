@@ -138,64 +138,37 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         request, context = worker_ctx.args
         cardinality = worker_ctx.entrypoint.cardinality
 
-        # exception: from exc_info or in stream
-        # status: from exc_info, in stream, or context
-        # status code: from exc_info, in stream, or context; or 0
-        # result attributes: should be there unless there's exc_info?
+        # capture exceptions, either direct or from a stream
+        capture_exc_info = exc_info
+        if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
+            try:
+                list(result_iterators[worker_ctx].tee())
+            except Exception:
+                capture_exc_info = sys.exc_info()
 
-        span.set_attribute(
-            "rpc.grpc.status_code",
-            int(context.response_stream.trailers.get("grpc-status", 0)),
-        )
-        status = self.get_status(worker_ctx, result, exc_info)
-        span.set_status(status)
-
-        # exception
-        if exc_info:
-            grpc_error = GrpcError.from_exception(exc_info)
+        # record any exception and update status and status code accordingly
+        if capture_exc_info:
             span.record_exception(
-                exc_info[1],
+                capture_exc_info[1],
                 escaped=True,
-                attributes=self.get_exception_attributes(worker_ctx, exc_info),
+                attributes=self.get_exception_attributes(worker_ctx, capture_exc_info),
             )
-        elif cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
-            tee = result_iterators[worker_ctx]
-            teed = Teeable(tee)
-            result_iterators[worker_ctx] = teed
-            try:
-                list(teed.tee())
-            except Exception:
-                stream_exc_info = sys.exc_info()
-                span.record_exception(
-                    stream_exc_info[1],
-                    escaped=True,
-                    attributes=self.get_exception_attributes(
-                        worker_ctx, stream_exc_info
-                    ),
-                )
-                status = self.get_status(worker_ctx, result, stream_exc_info)
-                span.set_status(status)
 
-        # status
-        if exc_info:
-            grpc_error = GrpcError.from_exception(exc_info)
+            grpc_error = GrpcError.from_exception(capture_exc_info)
             span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
+            status = self.get_status(worker_ctx, result, capture_exc_info)
+            span.set_status(status)
+        else:
+            # set status and status code
+            span.set_attribute(
+                "rpc.grpc.status_code",
+                int(context.response_stream.trailers.get("grpc-status", 0)),
+            )
+            status = self.get_status(worker_ctx, result, exc_info)
+            span.set_status(status)
 
-        elif cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
-            tee = result_iterators[worker_ctx]
-            teed = Teeable(tee)
-            result_iterators[worker_ctx] = teed
-            try:
-                list(teed.tee())
-            except Exception:
-                stream_exc_info = sys.exc_info()
-                grpc_error = GrpcError.from_exception(stream_exc_info)
-                span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
-                status = self.get_status(worker_ctx, result, stream_exc_info)
-                span.set_status(status)
-
-        if not exc_info:
-            span.set_attributes(self.get_result_attributes(worker_ctx, result) or {})
+        # finally capture any results
+        span.set_attributes(self.get_result_attributes(worker_ctx, result) or {})
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
