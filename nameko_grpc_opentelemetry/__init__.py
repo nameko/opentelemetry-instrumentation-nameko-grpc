@@ -135,7 +135,6 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         if not span.is_recording():
             return
 
-        request, context = worker_ctx.args
         cardinality = worker_ctx.entrypoint.cardinality
 
         # capture exceptions, either direct or from a stream
@@ -145,30 +144,24 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                 list(result_iterators[worker_ctx].tee())
             except Exception:
                 capture_exc_info = sys.exc_info()
+                # super() impl won't call get_result_attributes in the
+                # error case, but we want it if the error occurred in a stream.
+                span.set_attributes(
+                    self.get_result_attributes(worker_ctx, result) or {}
+                )
 
-        # record any exception and update status and status code accordingly
+        # set grpc status code attribute
         if capture_exc_info:
-            span.record_exception(
-                capture_exc_info[1],
-                escaped=True,
-                attributes=self.get_exception_attributes(worker_ctx, capture_exc_info),
-            )
-
             grpc_error = GrpcError.from_exception(capture_exc_info)
             span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
-            status = self.get_status(worker_ctx, result, capture_exc_info)
-            span.set_status(status)
         else:
-            # set status and status code
+            _, context = worker_ctx.args
             span.set_attribute(
                 "rpc.grpc.status_code",
                 int(context.response_stream.trailers.get("grpc-status", 0)),
             )
-            status = self.get_status(worker_ctx, result, exc_info)
-            span.set_status(status)
 
-        # finally capture any results
-        span.set_attributes(self.get_result_attributes(worker_ctx, result) or {})
+        super().end_span(span, worker_ctx, result, capture_exc_info)
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
