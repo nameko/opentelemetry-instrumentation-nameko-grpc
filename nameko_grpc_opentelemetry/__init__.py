@@ -72,9 +72,8 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
             return {"rpc.grpc.request": request_string}
 
     def get_result_attributes(self, worker_ctx, result):
-        attributes = {
-            "rpc.grpc.status_code": nameko_grpc.errors.StatusCode.OK.value[0],
-        }
+        attributes = {}
+
         if self.config.get("send_response_payloads"):
             cardinality = worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
@@ -91,14 +90,6 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                             )
                 except Exception as exc:
                     messages.append(f"{type(exc).__name__}: {exc}")
-
-                    # no way to access span -- see xfail tests
-                    # exc_info = sys.exc_info()
-                    # span.record_exception(
-                    #     exc_info[1],
-                    #     escaped=True,
-                    #     attributes=self.get_exception_attributes(worker_ctx, exc_info),
-                    # )
 
                 response_string = " | ".join(messages)
 
@@ -141,15 +132,70 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return attributes
 
     def end_span(self, span, worker_ctx, result, exc_info):
-        super().end_span(span, worker_ctx, result, exc_info)
-        if span.is_recording():
-            if exc_info:
-                grpc_error = GrpcError.from_exception(exc_info)
+        if not span.is_recording():
+            return
+
+        request, context = worker_ctx.args
+        cardinality = worker_ctx.entrypoint.cardinality
+
+        # exception: from exc_info or in stream
+        # status: from exc_info, in stream, or context
+        # status code: from exc_info, in stream, or context; or 0
+        # result attributes: should be there unless there's exc_info?
+
+        span.set_attribute(
+            "rpc.grpc.status_code",
+            int(context.response_stream.trailers.get("grpc-status", 0)),
+        )
+        status = self.get_status(worker_ctx, result, exc_info)
+        span.set_status(status)
+
+        # exception
+        if exc_info:
+            grpc_error = GrpcError.from_exception(exc_info)
+            span.record_exception(
+                exc_info[1],
+                escaped=True,
+                attributes=self.get_exception_attributes(worker_ctx, exc_info),
+            )
+        elif cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
+            tee = result_iterators[worker_ctx]
+            teed = Teeable(tee)
+            result_iterators[worker_ctx] = teed
+            try:
+                list(teed.tee())
+            except Exception:
+                stream_exc_info = sys.exc_info()
+                span.record_exception(
+                    stream_exc_info[1],
+                    escaped=True,
+                    attributes=self.get_exception_attributes(
+                        worker_ctx, stream_exc_info
+                    ),
+                )
+                status = self.get_status(worker_ctx, result, stream_exc_info)
+                span.set_status(status)
+
+        # status
+        if exc_info:
+            grpc_error = GrpcError.from_exception(exc_info)
+            span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
+
+        elif cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
+            tee = result_iterators[worker_ctx]
+            teed = Teeable(tee)
+            result_iterators[worker_ctx] = teed
+            try:
+                list(teed.tee())
+            except Exception:
+                stream_exc_info = sys.exc_info()
+                grpc_error = GrpcError.from_exception(stream_exc_info)
                 span.set_attribute("rpc.grpc.status_code", grpc_error.code.value[0])
-            else:
-                request, context = worker_ctx.args
-                status = context.response_stream.trailers.get("grpc-status")
-                span.set_attribute("rpc.grpc.status_code", int(status))
+                status = self.get_status(worker_ctx, result, stream_exc_info)
+                span.set_status(status)
+
+        if not exc_info:
+            span.set_attributes(self.get_result_attributes(worker_ctx, result) or {})
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
@@ -304,19 +350,17 @@ class NamekoGrpcInstrumentor(BaseInstrumentor):
             partial(server_handle_request, tracer, config),
         )
 
+        wrap_function_wrapper(
+            "nameko_grpc.entrypoint",
+            "Grpc.handle_result",
+            partial(handle_result, tracer, config),
+        )
+
         if config.get("send_request_payloads"):
             wrap_function_wrapper(
                 "nameko_grpc.entrypoint",
                 "Grpc.handle_request",
                 partial(entrypoint_handle_request, tracer, config),
-            )
-
-        if config.get("send_response_payloads"):
-
-            wrap_function_wrapper(
-                "nameko_grpc.entrypoint",
-                "Grpc.handle_result",
-                partial(handle_result, tracer, config),
             )
 
     def _uninstrument(self, **kwargs):

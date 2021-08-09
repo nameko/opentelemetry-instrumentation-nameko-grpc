@@ -742,7 +742,7 @@ class TestExceptions:
                     # break on the last message
                     if i == request.response_count - 1:
 
-                        code = StatusCode.RESOURCE_EXHAUSTED
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
                         message = "Out of tokens!"
 
                         context.set_code(code)
@@ -765,7 +765,7 @@ class TestExceptions:
                     # raise on the last message
                     if i == request.response_count - 1:
 
-                        code = StatusCode.RESOURCE_EXHAUSTED
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
                         message = "Out of tokens!"
 
                         raise GrpcError(
@@ -847,7 +847,6 @@ class TestExceptions:
         # no exception
         assert len(server_span.events) == 0
 
-    @pytest.mark.xfail  # no access to span to record exception
     def test_raise_exception_in_stream(
         self, protos, client, container, memory_exporter
     ):
@@ -870,7 +869,6 @@ class TestExceptions:
         assert event.attributes["exception.type"] == "Error"
         assert event.attributes["exception.message"] == "boom"
 
-    @pytest.mark.xfail  # no access to span to record exception
     def test_raise_grpc_error_in_stream(
         self, protos, client, container, memory_exporter
     ):
@@ -891,7 +889,7 @@ class TestExceptions:
 
         assert event.name == "exception"
         assert event.attributes["exception.type"] == "GrpcError"
-        assert event.attributes["exception.message"] == "Not allowed!"
+        assert event.attributes["exception.message"] == "Out of tokens!"
 
     def test_stream_error_via_context(self, protos, client, container, memory_exporter):
         with entrypoint_waiter(container, "stream_error_via_context"):
@@ -1099,7 +1097,7 @@ class TestServerStatus:
                     # break on the last message
                     if i == request.response_count - 1:
 
-                        code = StatusCode.RESOURCE_EXHAUSTED
+                        code = nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED
                         message = "Out of tokens!"
 
                         context.set_code(code)
@@ -1184,8 +1182,48 @@ class TestServerStatus:
             nameko_grpc.errors.StatusCode.UNAUTHENTICATED.value[0]
         )
 
-    # test errored stream
-    # test errored stream via context
+    def test_errored_stream(self, container, client, protos, memory_exporter):
+        with entrypoint_waiter(container, "stream_error"):
+            responses = client.stream_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Error: boom"
+        assert (
+            server_span.attributes["rpc.grpc.status_code"]
+            == nameko_grpc.errors.StatusCode.UNKNOWN.value[0]
+        )
+
+    def test_errored_stream_via_context(
+        self, container, client, protos, memory_exporter
+    ):
+        with entrypoint_waiter(container, "stream_error_via_context"):
+            responses = client.stream_error_via_context(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        assert not server_span.status.is_ok
+        assert server_span.status.status_code == StatusCode.ERROR
+        assert server_span.status.description == "Out of tokens!"
+        assert server_span.attributes["rpc.grpc.status_code"] == (
+            nameko_grpc.errors.StatusCode.RESOURCE_EXHAUSTED.value[0]
+        )
 
 
 class TestScrubbing:
