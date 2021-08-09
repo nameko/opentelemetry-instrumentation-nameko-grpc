@@ -81,13 +81,11 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                 # result is tee'd in handle_result because the service
                 # has already drained the iterator by the time we get here
                 try:
-                    for res in result_iterators.pop(worker_ctx, {}):
-                        if res is not None:
-                            messages.append(
-                                serialise_to_string(
-                                    scrub(MessageToDict(res), self.config)
-                                )
-                            )
+                    messages.extend(
+                        serialise_to_string(scrub(MessageToDict(res), self.config))
+                        for res in result_iterators.pop(worker_ctx, {})
+                        if res is not None
+                    )
                 except Exception as exc:
                     messages.append(f"{type(exc).__name__}: {exc}")
 

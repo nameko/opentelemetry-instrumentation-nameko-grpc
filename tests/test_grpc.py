@@ -539,7 +539,7 @@ class TestResultAttributes:
             @grpc
             def stream_error(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # raise on the last message
                     if i == request.response_count - 1:
                         raise Error("boom")
@@ -729,7 +729,7 @@ class TestExceptions:
             @grpc
             def stream_error(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # raise on the last message
                     if i == request.response_count - 1:
                         raise Error("boom")
@@ -738,7 +738,7 @@ class TestExceptions:
             @grpc
             def stream_error_via_context(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # break on the last message
                     if i == request.response_count - 1:
 
@@ -761,7 +761,7 @@ class TestExceptions:
             @grpc
             def stream_grpc_error(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # raise on the last message
                     if i == request.response_count - 1:
 
@@ -1084,7 +1084,7 @@ class TestServerStatus:
             @grpc
             def stream_error(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # raise on the last message
                     if i == request.response_count - 1:
                         raise Error("boom")
@@ -1093,7 +1093,7 @@ class TestServerStatus:
             @grpc
             def stream_error_via_context(self, request, context):
                 message = request.value * (request.multiplier or 1)
-                for i in range(request.response_count):
+                for i in range(request.response_count):  # pragma: no cover
                     # break on the last message
                     if i == request.response_count - 1:
 
