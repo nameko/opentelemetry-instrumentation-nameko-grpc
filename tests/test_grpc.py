@@ -519,6 +519,9 @@ class TestResultAttributes:
 
         grpc = Grpc.implementing(services.exampleStub)
 
+        class Error(Exception):
+            pass
+
         class ExampleService:
             name = "example"
 
@@ -531,6 +534,15 @@ class TestResultAttributes:
             def unary_stream(self, request, context):
                 message = request.value * (request.multiplier or 1)
                 for i in range(request.response_count):
+                    yield protos.ExampleReply(message=message, seqno=i + 1)
+
+            @grpc
+            def stream_error(self, request, context):
+                message = request.value * (request.multiplier or 1)
+                for i in range(request.response_count):
+                    # raise on the last message
+                    if i == request.response_count - 1:
+                        raise Error("boom")
                     yield protos.ExampleReply(message=message, seqno=i + 1)
 
         container = container_factory(ExampleService)
@@ -588,6 +600,31 @@ class TestResultAttributes:
             assert (
                 attributes["rpc.grpc.response"]
                 == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
+            )
+        else:
+            assert "rpc.grpc.response" not in attributes
+
+    def test_error_in_stream(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
+        with entrypoint_waiter(container, "stream_error"):
+            responses = client.stream_error(
+                protos.ExampleRequest(value="A", response_count=2)
+            )
+            with pytest.raises(GrpcError):
+                list(responses)
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_response_payloads:
+            assert (
+                attributes["rpc.grpc.response"]
+                == "{'message': 'A', 'seqno': 1} | Error: boom"
             )
         else:
             assert "rpc.grpc.response" not in attributes

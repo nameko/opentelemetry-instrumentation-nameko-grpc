@@ -78,13 +78,19 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         if self.config.get("send_response_payloads"):
             cardinality = worker_ctx.entrypoint.cardinality
             if cardinality in (Cardinality.UNARY_STREAM, Cardinality.STREAM_STREAM):
-                messages = [
-                    serialise_to_string(scrub(MessageToDict(res), self.config))
-                    # result is tee'd in handle_result because the service
-                    # has already drained the iterator by the time we get here
-                    for res in result_iterators.pop(worker_ctx, {})
-                    if res is not None
-                ]
+                messages = []
+                # result is tee'd in handle_result because the service
+                # has already drained the iterator by the time we get here
+                try:
+                    for res in result_iterators.pop(worker_ctx, {}):
+                        if res is not None:
+                            messages.append(
+                                serialise_to_string(
+                                    scrub(MessageToDict(res), self.config)
+                                )
+                            )
+                except Exception as exc:
+                    messages.append(f"{type(exc).__name__}: {exc}")
                 response_string = " | ".join(messages)
 
             else:
