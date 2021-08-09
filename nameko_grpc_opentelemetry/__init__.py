@@ -91,6 +91,15 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                             )
                 except Exception as exc:
                     messages.append(f"{type(exc).__name__}: {exc}")
+
+                    # no way to access span -- see xfail tests
+                    # exc_info = sys.exc_info()
+                    # span.record_exception(
+                    #     exc_info[1],
+                    #     escaped=True,
+                    #     attributes=self.get_exception_attributes(worker_ctx, exc_info),
+                    # )
+
                 response_string = " | ".join(messages)
 
             else:
