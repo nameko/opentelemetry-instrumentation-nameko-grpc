@@ -28,7 +28,7 @@ setup(
         "nameko",
         "nameko-grpc>=1.2.0rc",
         "googleapis-common-protos",  # should be a nameko-grpc dep
-        "opentelemetry-api",
+        "opentelemetry-api<1.13.0",
         "opentelemetry-instrumentation",
         "opentelemetry-instrumentation-nameko>=0.3.0",
     ],

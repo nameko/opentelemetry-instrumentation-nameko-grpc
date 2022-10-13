@@ -241,14 +241,12 @@ def entrypoint_handle_request(tracer, config, wrapped, instance, args, kwargs):
     """
     request_stream, response_stream = args
 
-    if instance.cardinality in (Cardinality.STREAM_UNARY, Cardinality.STREAM_STREAM):
+    original_consume = request_stream.consume
 
-        original_consume = request_stream.consume
+    def consume(input_type):
+        return Teeable(original_consume(input_type))
 
-        def consume(input_type):
-            return Teeable(original_consume(input_type))
-
-        request_stream.consume = consume
+    request_stream.consume = consume
 
     return wrapped(request_stream, response_stream, **kwargs)
 
