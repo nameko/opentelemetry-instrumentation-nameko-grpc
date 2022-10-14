@@ -20,6 +20,7 @@ with open(PACKAGE_FILENAME) as f:
 setup(
     name="opentelemetry-instrumentation-nameko-grpc",
     description="Extension producing opentelemetry data for nameko-grpc",
+    python_requires=">=3.7",
     version=PACKAGE_INFO["__version__"],
     author="Nameko Authors",
     url="https://github.com/nameko/opentelemetry-instrumentation-nameko-grpc",
@@ -30,7 +31,7 @@ setup(
         "googleapis-common-protos",  # should be a nameko-grpc dep
         "opentelemetry-api",
         "opentelemetry-instrumentation",
-        "opentelemetry-instrumentation-nameko>=0.3.0",
+        "opentelemetry-instrumentation-nameko>=0.4.0",
     ],
     extras_require={
         "dev": list(PACKAGE_INFO["_instruments"])
