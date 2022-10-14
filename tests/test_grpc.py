@@ -62,7 +62,8 @@ class TestCardinalities:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -157,7 +158,8 @@ class TestCaptureIncomingContext:
     def client(self, grpc_port, services, request, container):
         if request.param == "standalone":
             with Client(
-                "//localhost:{}".format(grpc_port), services.exampleStub,
+                "//localhost:{}".format(grpc_port),
+                services.exampleStub,
             ) as client:
                 yield client
         if request.param == "dependency_provider":
@@ -210,7 +212,8 @@ class TestNoEntrypointFired:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -255,7 +258,8 @@ class TestServerAttributes:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -306,7 +310,8 @@ class TestClientAttributes:
     def client(self, grpc_port, services, request, container):
         if request.param == "standalone":
             with Client(
-                "//localhost:{}".format(grpc_port), services.exampleStub,
+                "//localhost:{}".format(grpc_port),
+                services.exampleStub,
             ) as client:
                 yield client
         if request.param == "dependency_provider":
@@ -358,7 +363,8 @@ class TestAdditionalSpans:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -429,7 +435,8 @@ class TestCallArgsAttributes:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -555,7 +562,8 @@ class TestResultAttributes:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -654,13 +662,14 @@ class TestNoTracer:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
     @pytest.fixture
     def trace_provider(self):
-        """ Temporarily replace the configured trace provider with the default
+        """Temporarily replace the configured trace provider with the default
         provider that would be used if no SDK was in use.
         """
         with patch("nameko_opentelemetry.trace") as patched:
@@ -783,7 +792,8 @@ class TestExceptions:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -937,7 +947,8 @@ class TestPartialSpanInClient:
     def client(self, grpc_port, services, request, container):
         if request.param == "standalone":
             with Client(
-                "//localhost:{}".format(grpc_port), services.exampleStub,
+                "//localhost:{}".format(grpc_port),
+                services.exampleStub,
             ) as client:
                 yield client
         if request.param == "dependency_provider":
@@ -996,7 +1007,8 @@ class TestClientStatus:
     def client(self, grpc_port, services, request, container):
         if request.param == "standalone":
             with Client(
-                "//localhost:{}".format(grpc_port), services.exampleStub,
+                "//localhost:{}".format(grpc_port),
+                services.exampleStub,
             ) as client:
                 yield client
         if request.param == "dependency_provider":
@@ -1123,7 +1135,8 @@ class TestServerStatus:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
@@ -1249,7 +1262,8 @@ class TestScrubbing:
     @pytest.fixture
     def client(self, grpc_port, container, services):
         with Client(
-            "//localhost:{}".format(grpc_port), services.exampleStub,
+            "//localhost:{}".format(grpc_port),
+            services.exampleStub,
         ) as client:
             yield client
 
