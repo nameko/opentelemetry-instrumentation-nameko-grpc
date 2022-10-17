@@ -15,6 +15,23 @@ from nameko_opentelemetry import active_tracer
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from opentelemetry.trace.status import StatusCode
+from retry import retry
+
+
+class SelfGrpcProxy(GrpcProxy):
+    """
+    Some services in this test file try to connect to themselves.
+    This can then result in failure to establish connection for services
+    that try to connect to themselves before they are ready.
+    Since this initial connection doesn't retry at all, it fails,
+    resulting in non-deterministic test failures for these special cases.
+    This class overrides the dependency provider to retry until
+    connection is established.
+    """
+
+    @retry()
+    def start(self):
+        super().start()
 
 
 class TestCardinalities:
@@ -54,7 +71,6 @@ class TestCardinalities:
 
         container = container_factory(ExampleService)
         container.start()
-
         yield container
 
         container.stop()
@@ -137,7 +153,7 @@ class TestCaptureIncomingContext:
         class ExampleService:
             name = "example"
 
-            self_grpc = GrpcProxy(
+            self_grpc = SelfGrpcProxy(
                 "//localhost:{}".format(grpc_port), services.exampleStub
             )
 
@@ -290,7 +306,7 @@ class TestClientAttributes:
         class ExampleService:
             name = "example"
 
-            self_grpc = GrpcProxy(
+            self_grpc = SelfGrpcProxy(
                 "//localhost:{}".format(grpc_port), services.exampleStub
             )
 
@@ -927,7 +943,7 @@ class TestPartialSpanInClient:
         class ExampleService:
             name = "example"
 
-            self_grpc = GrpcProxy(
+            self_grpc = SelfGrpcProxy(
                 "//localhost:{}".format(grpc_port), services.exampleStub
             )
 
@@ -986,7 +1002,7 @@ class TestClientStatus:
         class ExampleService:
             name = "example"
 
-            self_grpc = GrpcProxy(
+            self_grpc = SelfGrpcProxy(
                 "//localhost:{}".format(grpc_port), services.exampleStub
             )
 

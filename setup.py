@@ -41,6 +41,7 @@ setup(
             "opentelemetry-sdk",
             "opentelemetry-instrumentation-requests",
             "grpcio-tools",
+            "retry",
         ],
         "instruments": PACKAGE_INFO["_instruments"],
     },
