@@ -5,5 +5,5 @@ test:
 	py.test tests -v
 
 coverage:
-	coverage run -m pytest tests -v
+	coverage run -m nameko test -v
 	coverage report
