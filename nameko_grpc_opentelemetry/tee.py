@@ -4,7 +4,7 @@ from threading import Lock
 
 
 def raisetee(iterable, n=2):
-    """ Alternative to `itertools.tee` that will raise from all iterators if the
+    """Alternative to `itertools.tee` that will raise from all iterators if the
     source iterable raises.
     Modified from the "roughly equivalent" example in the documentation at
     https://docs.python.org/3/library/itertools.html#itertools.tee
@@ -35,7 +35,7 @@ def raisetee(iterable, n=2):
 
 
 class ThreadSafeTee:
-    """ Thread-safe wrapper for `itertools.tee` (or `raisetee`) objects.
+    """Thread-safe wrapper for `itertools.tee` (or `raisetee`) objects.
     Copied from https://stackoverflow.com/questions/6703594/itertools-tee-thread-safe
     """
 
@@ -52,14 +52,13 @@ class ThreadSafeTee:
 
 
 def safetee(iterable, n):
-    """ Replacement for `itertools.tee` that returns `ThreadSafeTee` objects.
-    """
+    """Replacement for `itertools.tee` that returns `ThreadSafeTee` objects."""
     lock = Lock()
     return (ThreadSafeTee(tee, lock) for tee in raisetee(iterable, n))
 
 
 class Teeable:
-    """ Wrapper for `iterable`s that allows them to later be `tee`d
+    """Wrapper for `iterable`s that allows them to later be `tee`d
     (as in `itertools.tee`) *and* used in a thread-safe manner.
     This is useful for wrapping generators and other iterables that cannot be copied,
     such as streaming requests and responses.

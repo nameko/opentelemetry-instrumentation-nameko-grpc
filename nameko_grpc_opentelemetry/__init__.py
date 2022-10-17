@@ -2,6 +2,7 @@
 import sys
 import warnings
 from functools import partial
+from time import time_ns
 from weakref import WeakKeyDictionary
 
 import nameko_grpc.client
@@ -20,7 +21,6 @@ from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.propagate import inject
 from opentelemetry.trace.status import Status, StatusCode
-from opentelemetry.util._time import _time_ns
 from wrapt import wrap_function_wrapper
 
 from nameko_grpc_opentelemetry.package import _instruments
@@ -105,8 +105,7 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return attributes
 
     def get_status(self, worker_ctx, result, exc_info):
-        """ Span status for this worker.
-        """
+        """Span status for this worker."""
         if exc_info:
             return super().get_status(worker_ctx, result, exc_info)
 
@@ -121,8 +120,7 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
         return Status(StatusCode.OK)
 
     def get_exception_attributes(self, worker_ctx, exc_info):
-        """ Additional attributes to save alongside a worker exception.
-        """
+        """Additional attributes to save alongside a worker exception."""
         attributes = super().get_exception_attributes(worker_ctx, exc_info)
         attributes.update(
             {"exception.message": GrpcError.from_exception(exc_info).message}
@@ -163,7 +161,7 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
 
 
 def future(tracer, config, wrapped, instance, args, kwargs):
-    """ Wrap nameko_grpc.client.Method.future
+    """Wrap nameko_grpc.client.Method.future
 
     Start a span...
     """
@@ -184,7 +182,7 @@ def future(tracer, config, wrapped, instance, args, kwargs):
         name=f"{inspector.service_name}.{method.name}",
         kind=trace.SpanKind.CLIENT,
         attributes=attributes,
-        start_time=_time_ns(),
+        start_time=time_ns(),
     )
     activation = trace.use_span(span)
     activation.__enter__()
@@ -201,7 +199,7 @@ def future(tracer, config, wrapped, instance, args, kwargs):
 
 
 def result(tracer, config, wrapped, instance, args, kwargs):
-    """ Wrap nameko_grpc.client.Future.result
+    """Wrap nameko_grpc.client.Future.result
 
     Terminate span...
     """
@@ -224,14 +222,14 @@ def result(tracer, config, wrapped, instance, args, kwargs):
             else:
                 span.set_status(Status(StatusCode.OK))
                 activation.__exit__(None, None, None)
-            span.end(_time_ns())
+            span.end(time_ns())
         else:
             # something went wrong when starting the span; nothing more to do
             warnings.warn("result when no active span")
 
 
 def entrypoint_handle_request(tracer, config, wrapped, instance, args, kwargs):
-    """ Wrap nameko_grpc.entrypoint.Grpc.handle_request
+    """Wrap nameko_grpc.entrypoint.Grpc.handle_request
 
     If this entrypoint accepts a streaming request, we need to wrap it in a Teeeable
     instance so that `get_call_args_attributes` doesn't drain the iterator.
@@ -254,7 +252,7 @@ def entrypoint_handle_request(tracer, config, wrapped, instance, args, kwargs):
 
 
 def handle_result(tracer, config, wrapped, instance, args, kwargs):
-    """ Wrap nameko_grpc.entrypoint.Grpc.handle_result
+    """Wrap nameko_grpc.entrypoint.Grpc.handle_result
 
     If this entrypoint returns a streaming result, we need to wrap it in a Teeeable
     instance so that `get_result_attributes` doesn't drain the iterator.
@@ -270,7 +268,7 @@ def handle_result(tracer, config, wrapped, instance, args, kwargs):
 
 
 def server_handle_request(tracer, config, wrapped, instance, args, kwargs):
-    """ Wrap nameko_grpc.entrypoint.GrpcServer.handle_request.
+    """Wrap nameko_grpc.entrypoint.GrpcServer.handle_request.
 
     Handle cases where no entrypoint is fired.
     """
