@@ -412,7 +412,7 @@ class TestCallArgsAttributes:
         # disable request payloads based on param
         config["send_request_payloads"] = send_request_payloads
         # override default truncation length
-        config["truncate_max_length"] = 200
+        config["truncate_max_length"] = 50
         return config
 
     @pytest.fixture
@@ -484,9 +484,9 @@ class TestCallArgsAttributes:
     ):
         with entrypoint_waiter(container, "unary_unary"):
             response = client.unary_unary(
-                protos.ExampleRequest(value="A", multiplier=1000)
+                protos.ExampleRequest(value="A"*100)
             )
-            assert len(response.message) >= 1000
+            assert len(response.message) == 100
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
@@ -496,7 +496,7 @@ class TestCallArgsAttributes:
         attributes = server_span.attributes
 
         if send_request_payloads:
-            assert len(attributes["rpc.grpc.request"]) == 200
+            assert len(attributes["rpc.grpc.request"]) == 50
             assert attributes["rpc.grpc.request_truncated"] == "True"
 
     def test_streaming_request(
@@ -528,12 +528,12 @@ class TestCallArgsAttributes:
         self, protos, client, container, memory_exporter, send_request_payloads
     ):
         def generate_requests():
-            for index, value in enumerate(["A"] * 1000):
+            for index, value in enumerate(["A"] * 100):
                 yield protos.ExampleRequest(value=value + str(index))
 
         with entrypoint_waiter(container, "stream_unary"):
             response = client.stream_unary(generate_requests())
-            assert len(response.message) == 2000
+            assert len(response.message) == 389
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
@@ -543,7 +543,7 @@ class TestCallArgsAttributes:
         attributes = server_span.attributes
 
         if send_request_payloads:
-            assert len(attributes["rpc.grpc.request"]) == 200
+            assert len(attributes["rpc.grpc.request"]) == 50
             assert attributes["rpc.grpc.request_truncated"] == "True"
 
     def test_different_argument_name(
