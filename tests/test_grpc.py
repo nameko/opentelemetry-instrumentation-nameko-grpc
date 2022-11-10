@@ -483,9 +483,7 @@ class TestCallArgsAttributes:
         self, protos, client, container, memory_exporter, send_request_payloads
     ):
         with entrypoint_waiter(container, "unary_unary"):
-            response = client.unary_unary(
-                protos.ExampleRequest(value="A"*100)
-            )
+            response = client.unary_unary(protos.ExampleRequest(value="A" * 100))
             assert len(response.message) == 100
 
         spans = memory_exporter.get_finished_spans()
@@ -533,7 +531,7 @@ class TestCallArgsAttributes:
 
         with entrypoint_waiter(container, "stream_unary"):
             response = client.stream_unary(generate_requests())
-            assert len(response.message.split(',')) == 100
+            assert len(response.message.split(",")) == 100
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
