@@ -113,10 +113,12 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                 max_len=self.config.get("truncate_max_length"),
             )
 
-            attributes.update({
-                "rpc.grpc.response": response_truncated,
-                "rpc.grpc.response_truncated": str(truncated),
-            })
+            attributes.update(
+                {
+                    "rpc.grpc.response": response_truncated,
+                    "rpc.grpc.response_truncated": str(truncated),
+                }
+            )
 
         return attributes
 
