@@ -533,7 +533,7 @@ class TestCallArgsAttributes:
 
         with entrypoint_waiter(container, "stream_unary"):
             response = client.stream_unary(generate_requests())
-            assert len(response.message) == 389
+            assert len(response.message.split(',')) == 100
 
         spans = memory_exporter.get_finished_spans()
         assert len(spans) == 2
