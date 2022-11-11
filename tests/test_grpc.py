@@ -411,6 +411,8 @@ class TestCallArgsAttributes:
     def config(self, config, send_request_payloads):
         # disable request payloads based on param
         config["send_request_payloads"] = send_request_payloads
+        # override default truncation length
+        config["truncate_max_length"] = 50
         return config
 
     @pytest.fixture
@@ -472,8 +474,28 @@ class TestCallArgsAttributes:
 
         if send_request_payloads:
             assert attributes["rpc.grpc.request"] == "{'value': 'A'}"
+            assert attributes["rpc.grpc.request_truncated"] == "False"
         else:
             assert "rpc.grpc.request" not in attributes
+            assert "rpc.grpc.request_truncated" not in attributes
+
+    def test_unary_request_truncated(
+        self, protos, client, container, memory_exporter, send_request_payloads
+    ):
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(protos.ExampleRequest(value="A" * 100))
+            assert len(response.message) == 100
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_request_payloads:
+            assert len(attributes["rpc.grpc.request"]) == 50
+            assert attributes["rpc.grpc.request_truncated"] == "True"
 
     def test_streaming_request(
         self, protos, client, container, memory_exporter, send_request_payloads
@@ -495,8 +517,32 @@ class TestCallArgsAttributes:
 
         if send_request_payloads:
             assert attributes["rpc.grpc.request"] == "{'value': 'A'} | {'value': 'B'}"
+            assert attributes["rpc.grpc.request_truncated"] == "False"
         else:
             assert "rpc.grpc.request" not in attributes
+            assert "rpc.grpc.request_truncated" not in attributes
+
+    def test_streaming_request_truncated(
+        self, protos, client, container, memory_exporter, send_request_payloads
+    ):
+        def generate_requests():
+            for index, value in enumerate(["A"] * 100):
+                yield protos.ExampleRequest(value=value + str(index))
+
+        with entrypoint_waiter(container, "stream_unary"):
+            response = client.stream_unary(generate_requests())
+            assert len(response.message.split(",")) == 100
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_request_payloads:
+            assert len(attributes["rpc.grpc.request"]) == 50
+            assert attributes["rpc.grpc.request_truncated"] == "True"
 
     def test_different_argument_name(
         self, protos, client, container, memory_exporter, send_request_payloads
@@ -522,6 +568,7 @@ class TestCallArgsAttributes:
             )
         else:
             assert "rpc.grpc.request" not in attributes
+            assert "rpc.grpc.request_truncated" not in attributes
 
 
 class TestResultAttributes:
@@ -535,6 +582,8 @@ class TestResultAttributes:
     def config(self, config, send_response_payloads):
         # disable request payloads based on param
         config["send_response_payloads"] = send_response_payloads
+        # override default truncation length
+        config["truncate_max_length"] = 200
         return config
 
     @pytest.fixture
@@ -598,8 +647,31 @@ class TestResultAttributes:
         attributes = server_span.attributes
         if send_response_payloads:
             assert attributes["rpc.grpc.response"] == "{'message': 'A'}"
+            assert attributes["rpc.grpc.response_truncated"] == "False"
         else:
             assert "rpc.grpc.response" not in attributes
+            assert "rpc.grpc.response_truncated" not in attributes
+
+    def test_unary_response_truncated(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
+        multiplier = 1000
+        with entrypoint_waiter(container, "unary_unary"):
+            response = client.unary_unary(
+                protos.ExampleRequest(value="A", multiplier=multiplier)
+            )
+            assert response.message == "A" * multiplier
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_response_payloads:
+            assert len(attributes["rpc.grpc.response"]) == 200
+            assert attributes["rpc.grpc.response_truncated"] == "True"
 
     def test_stream_response(
         self, container, client, protos, memory_exporter, send_response_payloads
@@ -625,8 +697,33 @@ class TestResultAttributes:
                 attributes["rpc.grpc.response"]
                 == "{'message': 'A', 'seqno': 1} | {'message': 'A', 'seqno': 2}"
             )
+            assert attributes["rpc.grpc.response_truncated"] == "False"
         else:
             assert "rpc.grpc.response" not in attributes
+            assert "rpc.grpc.response_truncated" not in attributes
+
+    def test_stream_response_truncated(
+        self, container, client, protos, memory_exporter, send_response_payloads
+    ):
+        with entrypoint_waiter(container, "unary_stream"):
+            responses = client.unary_stream(
+                protos.ExampleRequest(value="A", response_count=100)
+            )
+            assert (
+                len([(response.message, response.seqno) for response in responses])
+                == 100
+            )
+
+        spans = memory_exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        server_span = list(filter(lambda span: span.kind == SpanKind.SERVER, spans))[0]
+
+        attributes = server_span.attributes
+
+        if send_response_payloads:
+            assert len(attributes["rpc.grpc.response"]) == 200
+            assert attributes["rpc.grpc.response_truncated"] == "True"
 
     def test_error_in_stream(
         self, container, client, protos, memory_exporter, send_response_payloads
@@ -650,8 +747,10 @@ class TestResultAttributes:
                 attributes["rpc.grpc.response"]
                 == "{'message': 'A', 'seqno': 1} | Error: boom"
             )
+            assert attributes["rpc.grpc.response_truncated"] == "False"
         else:
             assert "rpc.grpc.response" not in attributes
+            assert "rpc.grpc.response_truncated" not in attributes
 
 
 class TestNoTracer:

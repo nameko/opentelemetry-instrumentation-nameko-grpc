@@ -15,7 +15,7 @@ from nameko_grpc.inspection import Inspector
 from nameko_opentelemetry import active_tracer
 from nameko_opentelemetry.entrypoints import EntrypointAdapter
 from nameko_opentelemetry.scrubbers import scrub
-from nameko_opentelemetry.utils import serialise_to_string
+from nameko_opentelemetry.utils import serialise_to_string, truncate
 from opentelemetry import trace
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
@@ -69,7 +69,15 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                     scrub(MessageToDict(request), self.config)
                 )
 
-            return {"rpc.grpc.request": request_string}
+            request_truncated, truncated = truncate(
+                request_string,
+                max_len=self.config.get("truncate_max_length"),
+            )
+
+            return {
+                "rpc.grpc.request": request_truncated,
+                "rpc.grpc.request_truncated": str(truncated),
+            }
 
     def get_result_attributes(self, worker_ctx, result):
         attributes = {}
@@ -100,7 +108,17 @@ class GrpcEntrypointAdapter(EntrypointAdapter):
                 else:
                     response_string = ""
 
-            attributes.update({"rpc.grpc.response": response_string})
+            response_truncated, truncated = truncate(
+                response_string,
+                max_len=self.config.get("truncate_max_length"),
+            )
+
+            attributes.update(
+                {
+                    "rpc.grpc.response": response_truncated,
+                    "rpc.grpc.response_truncated": str(truncated),
+                }
+            )
 
         return attributes
 
